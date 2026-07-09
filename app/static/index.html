@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>小規模宅地 要件確認＆書面添付資料作成</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Findy DevOps x AI Agent Hackathon / M1</p>
+          <h1>小規模宅地 要件確認＆書面添付資料作成</h1>
+        </div>
+        <div class="topbar-actions">
+          <button class="icon-button" id="seedButton" title="デモ状態に戻す" aria-label="デモ状態に戻す">↺</button>
+          <div class="action-stack">
+            <button class="ghost-button primary" id="approveButton" type="button">承認</button>
+            <small id="approvalHint">相談文を実行すると承認できます</small>
+          </div>
+          <div class="action-stack">
+            <a class="ghost-link primary word-export-link disabled" id="wordLink" href="/api/export/word" aria-disabled="true">書面添付資料出力（Word）</a>
+            <small id="wordHint">承認するとWord出力できます</small>
+          </div>
+          <a class="ghost-link" href="/api/harness" target="_blank" rel="noreferrer">pytest視点</a>
+        </div>
+      </header>
+
+      <section class="workflow-guide" aria-label="Word出力までの流れ">
+        <span>① カード登録・Review作成</span>
+        <span>② レビュー完了（承認）</span>
+        <span>③ 書面添付資料をWord出力</span>
+      </section>
+
+      <section class="control-band" aria-label="案件条件">
+        <div class="case-summary">
+          <span class="case-label" id="caseId">case</span>
+          <strong id="caseTitle">読み込み中</strong>
+          <span id="caseLand">土地情報</span>
+        </div>
+        <form class="heir-registration" id="heirRegistrationForm">
+          <strong>相続人登録</strong>
+          <label>
+            <span>関係性</span>
+            <select id="heirRelationshipSelect">
+              <option value="spouse">配偶者</option>
+              <option value="eldest_son">長男</option>
+              <option value="eldest_daughter">長女</option>
+              <option value="second_son">次男</option>
+              <option value="second_daughter">次女</option>
+              <option value="third_son">三男</option>
+              <option value="third_daughter">三女</option>
+            </select>
+          </label>
+          <label>
+            <span>同居・非同居</span>
+            <select id="heirResidenceSelect">
+              <option value="co_resident">同居</option>
+              <option value="separate">非同居</option>
+            </select>
+          </label>
+          <button type="submit">追加</button>
+          <div class="form-error" id="heirError" role="alert" hidden></div>
+        </form>
+        <div class="heir-board" id="heirBoard" aria-label="相続人と自宅取得者"></div>
+        <label class="select-label">
+          <span>分割協議</span>
+          <select id="partitionSelect"></select>
+        </label>
+      </section>
+
+      <section class="agent-run-panel" aria-label="Review作成">
+        <div class="panel-head">
+          <div>
+            <h2>Review作成</h2>
+            <p>相続人カードだけでも、相談文ありでも、Intake → Router → Evidence → Draft → Review のACTIONを起動します。</p>
+            <p class="run-start-hint">カードが正しければ「カード内容でReview作成」、相談文がある場合は「相談文を実行」。</p>
+          </div>
+          <span id="runMode">決定的リプレイ</span>
+        </div>
+        <div class="run-input-row">
+          <textarea id="consultationText" rows="3">父が亡くなり、長男が同居して自宅を相続予定です。登記が祖父名義かもしれません。</textarea>
+          <div class="run-button-stack">
+            <button id="cardReviewButton" type="button">カード内容でReview作成</button>
+            <button id="runButton" type="button">相談文を実行</button>
+          </div>
+        </div>
+        <div class="run-error" id="runError" role="alert" hidden></div>
+        <div class="word-flow-panel" aria-label="Word出力操作">
+          <div class="word-flow-status">
+            <span>次の操作</span>
+            <strong id="wordFlowStatus">カード登録・Review作成</strong>
+            <p id="wordFlowHint">カード内容でReview作成、または相談文を実行すると、レビュー完了ボタンが押せます。</p>
+          </div>
+          <div class="word-flow-actions">
+            <button class="ghost-button primary" id="inlineApproveButton" type="button">② レビュー完了（承認）</button>
+            <a class="ghost-link primary word-export-link disabled" id="inlineWordLink" href="/api/export/word" aria-disabled="true">③ Word出力</a>
+          </div>
+        </div>
+        <div class="timeline" id="runTimeline" aria-live="polite"></div>
+      </section>
+
+      <section class="metrics-band" aria-label="達成度">
+        <div class="meter-block">
+          <div class="meter-copy">
+            <span>書面添付 達成度</span>
+            <strong id="completionPercent">0%</strong>
+          </div>
+          <div class="meter-track" aria-hidden="true">
+            <div class="meter-fill" id="completionFill"></div>
+          </div>
+          <p id="completionLabel">確認中</p>
+        </div>
+        <div class="boundary">
+          <span>責任分界</span>
+          <strong>判断は税理士</strong>
+          <p>AIは資料収集と下書きの整理まで。</p>
+        </div>
+        <div class="eligibility-pill" id="eligibilityPill">
+          <span id="eligibilityAlertLabel">適用可否アラート</span>
+          <strong>通常確認</strong>
+          <p>自宅取得者と同居有無を確認中。</p>
+          <div class="eligibility-impact" id="eligibilityImpact" hidden>
+            <span>否認インパクト</span>
+            <b id="eligibilityImpactValue">課税価格 +0円</b>
+          </div>
+        </div>
+        <div class="harness-pill" id="harnessPill">
+          <span id="harnessImpactLabel">検証ハーネス</span>
+          <strong>検証中</strong>
+          <b class="harness-impact" id="harnessImpactValue">課税価格 +0円</b>
+          <p id="harnessImpactNote">評価減 0円</p>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <section class="kanban-panel" aria-label="収集カンバン">
+          <div class="panel-head">
+            <h2>収集カンバン</h2>
+            <span id="missingCount">不足0件</span>
+          </div>
+          <div class="kanban-grid" id="kanbanGrid"></div>
+        </section>
+
+        <section class="draft-panel" aria-label="書面添付ドラフト">
+          <div class="panel-head">
+            <h2>書面添付ドラフト</h2>
+            <span id="draftStatus">確認中</span>
+          </div>
+          <article class="draft-section">
+            <h3>1 提示を受けた書類等</h3>
+            <ul id="presentedDocs"></ul>
+          </article>
+          <article class="draft-section">
+            <h3>3 計算し整理した主な事項（土地）</h3>
+            <ul id="landReview"></ul>
+          </article>
+          <article class="draft-section manual-only">
+            <h3>5 総合所見</h3>
+            <textarea id="overallOpinionInput" rows="6" placeholder="税理士が記入する欄"></textarea>
+            <div class="manual-actions">
+              <button id="saveOverallOpinionButton" type="button">保存</button>
+              <button id="clearOverallOpinionButton" type="button">クリア</button>
+              <span id="overallOpinionStatus">未入力</span>
+            </div>
+          </article>
+          <aside class="next-actions">
+            <h3>次の一手</h3>
+            <ol id="nextActions"></ol>
+          </aside>
+        </section>
+      </section>
+
+      <section class="compare-harness">
+        <section class="compare-panel" aria-label="反実仮想分岐">
+          <div class="panel-head">
+            <h2>反実仮想分岐</h2>
+            <span>取得者切替で二又</span>
+          </div>
+          <div class="branch-grid" id="branchGrid"></div>
+        </section>
+
+        <section class="test-panel" aria-label="否認インパクトハーネス">
+          <div class="panel-head">
+            <h2>否認インパクトハーネス</h2>
+            <span id="damageTotal">0円</span>
+          </div>
+          <div class="test-list" id="testList"></div>
+        </section>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

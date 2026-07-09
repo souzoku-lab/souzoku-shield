@@ -1,0 +1,257 @@
+{
+  "demo_case": {
+    "id": "case_small_residence_001",
+    "title": "自宅敷地の小規模宅地等の特例 要件確認",
+    "client": "架空相談者A",
+    "decedent": "架空被相続人B",
+    "land": {
+      "name": "自宅敷地",
+      "area_sqm": 220,
+      "estimated_value_yen": 70000000,
+      "note": "土地1区分に絞った公開デモ用の架空案件。特定居住用宅地等330㎡以内の80%減を前提に否認インパクトを示す。"
+    },
+    "heirs": {
+      "spouse_count": 1,
+      "child_count": 2,
+      "basic_deduction_yen": 48000000,
+      "note": "公開デモ用の架空前提。基礎控除は相続税法15条の式を説明するための表示値。"
+    },
+    "default_acquirer_type": "co_resident",
+    "default_partition_status": "in_progress"
+  },
+  "small_residence_denial_impact": {
+    "label": "小規模宅地 否認インパクト",
+    "land_value_yen": 70000000,
+    "reduction_rate": 0.8,
+    "lost_reduction_yen": 56000000,
+    "summary": "課税価格 +5,600万円（失われる評価減）",
+    "tax_formula_note": "本税＝評価減×相続税率（税率はケースにより変動）",
+    "provenance": {
+      "special_residence_reduction": "措置法69条の4（特定居住用宅地等）",
+      "basic_deduction": "相続税法15条",
+      "demo_value": "7,000万円は公開デモ用の架空評価額",
+      "confidence": "80%減・要件=confirmed、評価額=demo仮定"
+    }
+  },
+  "document_statuses": [
+    "not_requested",
+    "requested",
+    "received",
+    "verified"
+  ],
+  "documents": [
+    {
+      "id": "family_register",
+      "label": "戸籍一式",
+      "reason": "相続人と取得者の続柄を確認する。",
+      "default_status": "received"
+    },
+    {
+      "id": "resident_record",
+      "label": "住民票・戸籍附票",
+      "reason": "同居親族または家なき子の居住実態を確認する。",
+      "default_status": "requested"
+    },
+    {
+      "id": "land_registry",
+      "label": "登記事項証明書",
+      "reason": "土地の名義、地番、権利関係を確認する。",
+      "default_status": "verified"
+    },
+    {
+      "id": "cadastral_map",
+      "label": "公図",
+      "reason": "土地の位置と形状を確認する。",
+      "default_status": "received"
+    },
+    {
+      "id": "survey_map",
+      "label": "測量図",
+      "reason": "地積と形状を確認する。",
+      "default_status": "requested"
+    },
+    {
+      "id": "fixed_asset_certificate",
+      "label": "固定資産評価証明書",
+      "reason": "評価対象と固定資産情報を確認する。",
+      "default_status": "requested"
+    },
+    {
+      "id": "partition_agreement",
+      "label": "遺産分割協議書または分割見込書",
+      "reason": "申告期限までの分割確定または見込書提出状況を確認する。",
+      "default_status": "requested"
+    },
+    {
+      "id": "co_resident_continuation",
+      "label": "同居・居住保有継続の確認資料",
+      "reason": "同居親族が申告期限まで居住と保有を続ける見込みを確認する。",
+      "default_status": "not_requested"
+    },
+    {
+      "id": "house_lost_no_home_docs",
+      "label": "家なき子要件の居住履歴確認資料",
+      "reason": "2018年改正後の家屋所有・親族所有家屋居住・特別関係法人家屋居住の条件を確認する。",
+      "default_status": "not_requested"
+    },
+    {
+      "id": "prior_generation_title_check",
+      "label": "先代名義土地の有無確認",
+      "reason": "相続登記未了の先代名義土地を見落としていないか確認する。",
+      "default_status": "not_requested"
+    }
+  ],
+  "acquirer_types": {
+    "spouse": {
+      "label": "配偶者",
+      "summary": "配偶者取得。居住継続・保有継続の要件は置かず、取得者と分割状況を中心に確認する。",
+      "required_document_ids": [
+        "family_register",
+        "land_registry",
+        "cadastral_map",
+        "survey_map",
+        "fixed_asset_certificate",
+        "partition_agreement",
+        "prior_generation_title_check"
+      ],
+      "requirement_checks": [
+        "取得者が配偶者であることを戸籍で確認中。",
+        "遺産分割協議の進捗を確認中。",
+        "土地の名義・形状・面積・固定資産情報を確認中。",
+        "先代名義の土地が残っていないか確認中。"
+      ],
+      "risk_weight_yen": 0
+    },
+    "co_resident": {
+      "label": "同居親族",
+      "summary": "同居親族取得。申告期限までの居住継続・保有継続と分割状況を確認する。",
+      "required_document_ids": [
+        "family_register",
+        "resident_record",
+        "land_registry",
+        "cadastral_map",
+        "survey_map",
+        "fixed_asset_certificate",
+        "partition_agreement",
+        "co_resident_continuation",
+        "prior_generation_title_check"
+      ],
+      "requirement_checks": [
+        "取得者が同居親族であることを戸籍と住所資料で確認中。",
+        "申告期限まで居住を継続する見込みを確認中。",
+        "申告期限まで保有を継続する見込みを確認中。",
+        "遺産分割協議の進捗を確認中。",
+        "先代名義の土地が残っていないか確認中。"
+      ],
+      "risk_weight_yen": 56000000
+    },
+    "house_lost": {
+      "label": "家なき子",
+      "summary": "家なき子取得。2018年改正後の居住履歴、所有履歴、親族・特別関係法人の家屋条件を確認する。",
+      "required_document_ids": [
+        "family_register",
+        "resident_record",
+        "land_registry",
+        "cadastral_map",
+        "survey_map",
+        "fixed_asset_certificate",
+        "partition_agreement",
+        "house_lost_no_home_docs",
+        "prior_generation_title_check"
+      ],
+      "requirement_checks": [
+        "取得者が家なき子要件の対象候補か確認中。",
+        "相続開始前3年以内に自己、配偶者、3親等内親族、特別関係法人の家屋に居住していないか確認中。",
+        "過去の家屋所有状況を確認中。",
+        "遺産分割協議の進捗を確認中。",
+        "先代名義の土地が残っていないか確認中。"
+      ],
+      "risk_weight_yen": 56000000
+    }
+  },
+  "partition_statuses": {
+    "in_progress": {
+      "label": "進行中",
+      "draft_line": "遺産分割協議は進行中。分割確定または分割見込書の提出状況を確認中。",
+      "score": 0.35
+    },
+    "expected": {
+      "label": "分割見込書あり",
+      "draft_line": "分割見込書を前提に、申告後の分割確定予定を確認中。",
+      "score": 0.65
+    },
+    "finalized": {
+      "label": "確定",
+      "draft_line": "遺産分割協議書の内容を確認中。取得者と土地の対応関係を税理士が確認する。",
+      "score": 1.0
+    }
+  },
+  "safety_rules": {
+    "final_judgement_owner": "tax_professional",
+    "forbidden_definitive_phrases": [
+      "適用します",
+      "適用できます",
+      "課税されます",
+      "名義預金です",
+      "該当します",
+      "使えます"
+    ],
+    "safe_replacement": "税理士が確認する論点です"
+  },
+  "secondary_inheritance_prompt": {
+    "trigger_acquirer_type": "spouse",
+    "question": "二次相続の検討はされましたか？",
+    "why": "配偶者取得は一次相続では有利に見えますが、二次相続では配偶者の税額軽減が使えず、法定相続人の減少で基礎控除が縮小し、小規模宅地等の特例が二次で使えなくなる可能性があり、一次・二次を通算すると税負担が増える場合があります。取得割合の最適化・二次相続の試算は税理士の判断事項です。",
+    "guardrail": "AIは二次相続の金額を計算せず、取得者選択の結論を断定しない。",
+    "provenance": {
+      "spouse_credit": "相続税法19条の2",
+      "basic_deduction": "相続税法15条",
+      "special_residence": "措置法69条の4",
+      "confidence": "secondary inheritance issue=expert_labeled"
+    }
+  },
+  "harness_cases": [
+    {
+      "id": "spouse_no_continuation_requirement",
+      "label": "配偶者に居住・保有継続資料を要求しない",
+      "damage_yen": 0,
+      "impact_label": "○×確認",
+      "check": "spouse_must_not_require_continuation"
+    },
+    {
+      "id": "co_resident_requires_continuation",
+      "label": "同居親族は居住・保有継続を確認する",
+      "damage_yen": 56000000,
+      "impact_label": "否認で失われる評価減",
+      "check": "co_resident_must_require_continuation"
+    },
+    {
+      "id": "house_lost_2018_conditions",
+      "label": "家なき子は2018年改正後の条件確認を要求する",
+      "damage_yen": 56000000,
+      "impact_label": "否認で失われる評価減",
+      "check": "house_lost_must_require_2018_docs"
+    },
+    {
+      "id": "draft_never_decides",
+      "label": "下書きで断定しない",
+      "damage_yen": 0,
+      "impact_label": "○×安全ゲート",
+      "check": "draft_must_not_use_definitive_phrases"
+    },
+    {
+      "id": "overall_opinion_blank",
+      "label": "総合所見は税理士欄として空欄",
+      "damage_yen": 0,
+      "impact_label": "○×安全ゲート",
+      "check": "overall_opinion_must_be_blank"
+    },
+    {
+      "id": "spouse_secondary_inheritance_prompt",
+      "label": "配偶者取得時に二次相続の問いを出す",
+      "damage_yen": 0,
+      "impact_label": "○×専門家問いかけ",
+      "check": "spouse_must_prompt_secondary_inheritance"
+    }
+  ]
+}

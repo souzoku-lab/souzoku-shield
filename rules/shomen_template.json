@@ -1,0 +1,33 @@
+{
+  "form_name": "申告書の作成に関する計算事項等記載書面（資）",
+  "version_note": "M1 demo template. Numerical values and final opinions are placeholders for a licensed tax professional.",
+  "sections": [
+    {
+      "id": "section_1_presented_documents",
+      "label": "1 提示を受けた書類等",
+      "automation": "auto",
+      "description": "収集カンバンで受領済または確認済になった資料名を列挙する。"
+    },
+    {
+      "id": "section_2_prepared_documents",
+      "label": "2 自ら作成記入した書類等",
+      "automation": "auto",
+      "fixed_lines": [
+        "相続税申告書、土地評価明細書、小規模宅地等の特例チェックシートを、収集資料を基に作成予定。",
+        "評価額、面積、限度面積、最終判断欄は税理士確認のため未確定。"
+      ]
+    },
+    {
+      "id": "section_3_land_review",
+      "label": "3 計算し整理した主な事項（1）土地",
+      "automation": "semi_auto",
+      "description": "取得者区分、収集資料、分割協議の進捗から、確認中の候補文を生成する。"
+    },
+    {
+      "id": "section_5_overall_opinion",
+      "label": "5 総合所見",
+      "automation": "manual_only",
+      "description": "最終判断と心証は税理士が書く欄。M1では常に空欄にする。"
+    }
+  ]
+}
