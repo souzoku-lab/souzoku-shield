@@ -939,21 +939,30 @@ def _residence_evidence_for_label(text: str, label: str) -> tuple[bool, bool]:
 
 
 def _infer_home_acquirer_id(text: str, heirs: list[dict[str, Any]]) -> str:
-    candidates: list[tuple[int, str]] = []
+    candidates: list[tuple[int, int, int, str]] = []
     for heir in heirs:
         for alias in _aliases_for_heir(heir):
             for match in re.finditer(re.escape(alias), text):
                 sentence = _sentence_around(text, match.start(), match.end())
-                tail = text[match.end() : match.end() + 32]
+                tail = text[match.end() : match.end() + 64]
                 if _has_any(sentence, ["相続", "取得", "引き継", "受け継"]) and (
                     _has_any(sentence, ["自宅", "実家", "家", "宅地", "居宅", "土地"])
                     or _has_any(tail, ["相続", "取得", "引き継", "受け継"])
                 ):
-                    candidates.append((match.start(), str(heir["id"])))
+                    subject = re.match(r"\s*(?:さん|様)?(?:が|は)", tail)
+                    possessive = re.match(r"\s*の", tail)
+                    transfer = re.search(r"(?:相続|取得|引き継|受け継)", tail)
+                    grammar_rank = 0 if subject else 1
+                    if possessive:
+                        grammar_rank = 2
+                    transfer_distance = transfer.start() if transfer else len(sentence)
+                    candidates.append(
+                        (grammar_rank, transfer_distance, match.start(), str(heir["id"]))
+                    )
     if not candidates:
         return ""
-    candidates.sort(key=lambda item: item[0])
-    return candidates[0][1]
+    candidates.sort(key=lambda item: item[:3])
+    return candidates[0][3]
 
 
 def _aliases_for_heir(heir: dict[str, Any]) -> list[str]:
