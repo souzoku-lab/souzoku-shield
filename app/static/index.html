@@ -17,7 +17,7 @@
         <div class="brand">
           <p class="eyebrow">Findy DevOps × AI Agent Hackathon / M1</p>
           <h1>Souzoku Shield — 相続の盾</h1>
-          <p class="tagline">Geminiが取得者ルートを選び、決定的税務コアが不足資料・リスク・書面添付ドラフトを組み立てる。</p>
+          <p class="tagline">Geminiが「進むか、聞くか」を選び、決定的税務コアが不足資料・リスク・書面添付ドラフトを組み立てる。</p>
         </div>
         <div class="topbar-actions">
           <button class="ghost-button reset-demo" id="seedButton" type="button" title="デモを初期状態に戻す">60秒デモを初期化</button>
@@ -81,17 +81,31 @@
         <div class="panel-head">
           <div>
             <h2>Review作成</h2>
-            <p>相談文でも、相続人カードだけでも、Intake → Router → Evidence → Draft → Review のACTIONを起動します。</p>
+            <p>Geminiが必要事実を確認し、十分なら Intake → Router → Evidence → Draft → Review を起動。不足なら案件を変えず問い返します。</p>
             <p class="run-start-hint">まずは「① AIエージェントを実行」。カードだけで進める場合は「カード内容でReview作成」。</p>
           </div>
           <span id="runMode">決定的リプレイ</span>
         </div>
         <div id="geminiEvidence" class="gemini-evidence" aria-live="polite"></div>
+        <section id="clarificationPanel" class="clarification-panel" role="status" hidden>
+          <div class="clarification-copy">
+            <span>SAFE STOP / 追加情報待ち</span>
+            <strong id="clarificationQuestion">追加確認が必要です</strong>
+            <p>Geminiが情報不足を検出しました。案件状態とドラフトを変更せず、Review・Wordをロックして停止しています。</p>
+          </div>
+          <label class="clarification-answer-label">
+            <span>追加回答</span>
+            <textarea id="clarificationAnswer" rows="2" maxlength="500" placeholder="質問への回答だけを入力してください"></textarea>
+          </label>
+          <button id="resumeButton" class="primary-cta" type="button">追加情報を渡して再開</button>
+          <div class="run-error" id="clarificationError" role="alert" hidden></div>
+        </section>
         <div class="run-input-row">
-          <textarea id="consultationText" rows="3">父が亡くなり、母と長男は同居していました。持ち家のない別居の次男が、自宅を相続する予定です。次男は賃貸住宅に住んでいます。</textarea>
+          <textarea id="consultationText" rows="3">父が亡くなりました。母と長男は父の家で暮らしていました。自宅は次男が引き継ぐ予定です。次男は就職後ずっと会社近くの賃貸マンションで生活しており、住宅を購入したことはありません。</textarea>
           <div class="run-button-stack">
             <button id="runButton" class="primary-cta" type="button">① AIエージェントを実行</button>
             <button id="cardReviewButton" class="secondary-cta" type="button">カード内容でReview作成</button>
+            <button id="ambiguousDemoButton" class="ghost-button" type="button">曖昧な相談を試す</button>
           </div>
         </div>
         <p id="runStatus" class="run-status" role="status" hidden></p>

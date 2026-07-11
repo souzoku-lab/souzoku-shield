@@ -92,3 +92,18 @@ class ConsultationRunRequest(BaseModel):
         if len(normalized) > 1200:
             raise ValueError("相談文は1200文字以内で入力してください。")
         return normalized
+
+
+class ClarificationAnswerRequest(BaseModel):
+    answer: str = Field()
+
+    @field_validator("answer")
+    @classmethod
+    def normalize_and_validate_answer(cls, value: str) -> str:
+        normalized = unicodedata.normalize("NFKC", str(value))
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if len(normalized) < 2:
+            raise ValueError("追加回答は2文字以上で入力してください。")
+        if len(normalized) > 500:
+            raise ValueError("追加回答は500文字以内で入力してください。")
+        return normalized

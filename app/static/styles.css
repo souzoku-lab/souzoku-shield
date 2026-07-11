@@ -339,7 +339,7 @@ h3 {
 
 .timeline {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--timeline-columns, 5), minmax(0, 1fr));
   gap: 8px;
   padding: 12px 14px 14px;
 }
@@ -355,6 +355,11 @@ h3 {
 .timeline-step.pending {
   border-color: #ddb26a;
   background: var(--amber-bg);
+}
+
+.timeline-step.awaiting {
+  border-color: #d59a31;
+  background: #fff7e7;
 }
 
 .timeline-step strong {
@@ -1047,6 +1052,11 @@ h3 {
   background: var(--red-bg);
 }
 
+.badge.amber {
+  background: var(--amber-bg);
+  color: #8a5a00;
+}
+
 .harness-pill.red {
   border-color: #f3b4ad;
   background: var(--red-bg);
@@ -1335,6 +1345,97 @@ h3 {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.gemini-guardrail {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--green);
+  background: rgba(255, 255, 255, 0.66);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.decision-history {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(15, 107, 75, 0.2);
+}
+
+.decision-history > strong {
+  font-size: 12px;
+}
+
+.decision-history ol {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding-left: 20px;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.clarification-panel {
+  display: grid;
+  grid-template-columns: minmax(240px, 1.2fr) minmax(260px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  margin: 12px 14px 0;
+  padding: 14px;
+  border: 2px solid #d59a31;
+  border-radius: 10px;
+  background: #fff7e7;
+}
+
+.clarification-panel[hidden] {
+  display: none;
+}
+
+.clarification-copy span {
+  color: #8a5a00;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.clarification-copy strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.clarification-copy p {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.clarification-answer-label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.clarification-answer-label textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 58px;
+}
+
+.clarification-panel .run-error {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 900px) {
+  .clarification-panel {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
 }
 
 /* 承認後は Review ステップも完了表示にする（表示矛盾の解消） */
