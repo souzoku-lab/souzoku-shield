@@ -160,7 +160,7 @@ def test_static_ui_is_served() -> None:
         assert "課税価格" in script.text
         assert styles.status_code == 200
         assert ".review-impact b" in styles.text
-        assert "word-break: keep-all" in styles.text
+        assert styles.text.count("word-break: keep-all") >= 3
         assert "Gemini 3.5 Flash 実接続" in script.text
         assert "カード内容でReview作成" in script.text
         assert "レビュー完了（承認）" in script.text
