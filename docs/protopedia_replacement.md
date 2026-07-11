@@ -46,33 +46,31 @@ Souzoku Shield — 相続の盾
 
 ## システム構成図に載せる内容
 
-1枚の図を、上段の**RUN — 専門判断を実行する**と下段の**DEVOPS — 専門判断の変更を検証する**の2レーンで構成する。
+1枚の図を、上段の**実行の流れ**と下段の**継続改善**の2レーンで構成する。固有技術名以外は日本語で説明し、審査員が図だけを見ても責任分界と安全停止を理解できるようにする。
 
 ```mermaid
 flowchart TB
-    subgraph RUN[RUN — 専門判断を実行する]
-        U[税理士の散文相談 / 相続人カード] --> G{{Gemini 3.5 Flash<br/>Function Calling}}
-        G -->|情報不足<br/>request_clarification| Q[SAFE STOP<br/>状態を変えず追加回答を待つ]
-        Q -->|回答して再開| G
-        G -->|情報十分<br/>select_taker_branch| C[決定的コア]
-        C --> D[不足資料 / リスク / 確認タスク / 書面ドラフト]
-        D --> R[Reviewで停止]
-        R -->|税理士が承認| W[Word出力]
+    subgraph EXECUTION[実行の流れ]
+        U[散文相談・相続人情報・追加回答] --> G{{Gemini 3.5 Flash<br/>進むか聞くかを選ぶ}}
+        G -->|情報不足・矛盾・AI障害| Q[安全停止<br/>状態を変えず追加回答を待つ]
+        Q -->|追加回答後に同じ案件を再開| G
+        G -->|情報が十分| C[決定的な専門判断コア]
+        C --> D[必要資料・リスク・確認点・書面案]
+        D --> R[税理士が適用可否と所見を確認]
+        R -->|人の責任で承認| W[承認後のみWord書面を出力]
     end
 
-    subgraph DEVOPS[DEVOPS — 専門判断の変更を検証する]
-        P[push / pull request] --> S[secret scan]
-        S --> T[pytest 72件]
-        T --> B[docker build]
-        B --> H[container /api/health]
-        H --> M[CI合格を確認]
+    subgraph IMPROVEMENT[継続改善]
+        P[専門知ルールをGitHubで更新] --> A[GitHub Actionsで自動検証]
+        A --> T[秘密情報検査 / pytest 72件 / Docker起動確認]
+        T --> M[合格した版だけCloud Runへ手動公開]
     end
 
-    T -. 分岐・停止・承認の回帰を検証 .-> C
-    M -. 公開main SHAを手動deploy .-> G
+    T -. 分岐・停止・再開・承認を回帰検証 .-> C
+    M -. 公開SHAと本番動作を確認 .-> G
 ```
 
-図の色分けは、**AI＝紫、決定的コード＝緑、人間＝橙、SAFE STOP＝琥珀、CI＝緑**とする。図だけを見ても「AIが全部決めるシステムではない」と分かることを優先する。
+図の色分けは、**AI＝紫、決定的コード＝緑、人間＝橙、安全停止＝琥珀、継続改善＝緑**とする。図だけを見ても「AIが全部決めるシステムではない」と分かることを優先する。
 
 ## システム構成の説明文
 

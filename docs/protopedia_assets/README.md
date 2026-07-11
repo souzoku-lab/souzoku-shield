@@ -12,6 +12,7 @@
 ## システム構成
 
 - `04_system_architecture.png`をProtoPediaの「システム構成」画像へ登録する。
+- 固有技術名以外は日本語表記。「実行の流れ」と「継続改善」の2段で、安全停止と人の承認を説明する。
 - `souzoku_shield_protopedia_visuals.pptx`は4画像の編集可能な元データ。
 
 ## 公開前の必須確認
