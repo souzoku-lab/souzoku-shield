@@ -8,6 +8,17 @@ const statusLabels = {
 const statusOrder = ["not_requested", "requested", "received", "verified"];
 
 let currentPayload = null;
+let editingHeirId = null;
+
+const HEIR_RELATIONSHIP_BY_NAME = {
+  "配偶者": "spouse",
+  "長男": "eldest_son",
+  "長女": "eldest_daughter",
+  "次男": "second_son",
+  "次女": "second_daughter",
+  "三男": "third_son",
+  "三女": "third_daughter",
+};
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -318,12 +329,33 @@ function renderControls(state, summary, analysis) {
     toggle.disabled = heir.relation === "spouse";
     toggle.addEventListener("click", () => patchHeir(heir.id, { co_resident: !heir.co_resident }));
 
+    const actions = document.createElement("div");
+    actions.className = "heir-card-actions";
+
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.dataset.action = "edit-heir";
+    edit.textContent = "修正";
+    edit.addEventListener("click", () => beginHeirEdit(heir));
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.dataset.action = "delete-heir";
+    remove.className = "danger-button";
+    remove.textContent = "削除";
+    remove.addEventListener("click", () => {
+      if (!window.confirm(`${heir.name}を削除しますか？`)) return;
+      deleteHeir(heir.id).catch((error) => setHeirError(error.message));
+    });
+
+    actions.append(edit, remove);
+
     const meta = document.createElement("p");
     meta.textContent = selected
       ? `${analysis.acquirer.label}として要件確認中`
       : "クリックで自宅取得者に設定";
 
-    card.append(relation, name, status, choose, toggle, meta);
+    card.append(relation, name, status, choose, toggle, actions, meta);
     board.appendChild(card);
   });
 
@@ -483,14 +515,47 @@ async function patchHeir(heirId, patch) {
   render(currentPayload);
 }
 
-async function addHeir() {
+function relationshipForHeir(heir) {
+  return HEIR_RELATIONSHIP_BY_NAME[heir.name] || (heir.relation === "spouse" ? "spouse" : "eldest_son");
+}
+
+function beginHeirEdit(heir) {
+  editingHeirId = heir.id;
+  qs("#heirRelationshipSelect").value = relationshipForHeir(heir);
+  qs("#heirResidenceSelect").value = heir.co_resident ? "co_resident" : "separate";
+  qs("#heirFormTitle").textContent = `${heir.name}を修正`;
+  qs("#heirSubmitButton").textContent = "更新";
+  qs("#heirEditCancelButton").hidden = false;
+  setHeirError("");
+  qs("#heirRelationshipSelect").focus();
+}
+
+function cancelHeirEdit() {
+  editingHeirId = null;
+  qs("#heirFormTitle").textContent = "相続人登録";
+  qs("#heirSubmitButton").textContent = "追加";
+  qs("#heirEditCancelButton").hidden = true;
+  qs("#heirRelationshipSelect").value = "spouse";
+  qs("#heirResidenceSelect").value = "co_resident";
+  setHeirError("");
+}
+
+async function submitHeir() {
   const relationship = qs("#heirRelationshipSelect").value;
   const coResident = qs("#heirResidenceSelect").value === "co_resident";
-  currentPayload = await api("/api/heirs", {
-    method: "POST",
+  const heirId = editingHeirId;
+  currentPayload = await api(heirId ? `/api/heirs/${heirId}` : "/api/heirs", {
+    method: heirId ? "PATCH" : "POST",
     body: JSON.stringify({ relationship, co_resident: coResident }),
   });
   render(currentPayload);
+  cancelHeirEdit();
+}
+
+async function deleteHeir(heirId) {
+  currentPayload = await api(`/api/heirs/${heirId}`, { method: "DELETE" });
+  render(currentPayload);
+  if (editingHeirId === heirId) cancelHeirEdit();
   setHeirError("");
 }
 
@@ -664,10 +729,12 @@ qs("#seedButton").addEventListener("click", async () => {
 
 qs("#heirRegistrationForm").addEventListener("submit", (event) => {
   event.preventDefault();
-  addHeir().catch((error) => {
+  submitHeir().catch((error) => {
     setHeirError(error.message);
   });
 });
+
+qs("#heirEditCancelButton").addEventListener("click", cancelHeirEdit);
 
 qs("#cardReviewButton").addEventListener("click", () => {
   runCardReview().catch((error) => {

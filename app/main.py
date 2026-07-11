@@ -268,6 +268,10 @@ def patch_heir(heir_id: str, payload: HeirPatch, session: DemoSession = Depends(
     heir = next((item for item in heirs if item["id"] == heir_id), None)
     if heir is None:
         raise HTTPException(status_code=404, detail="heir_not_found")
+    if payload.relationship is not None:
+        profile = HEIR_RELATIONSHIP_PROFILES[payload.relationship]
+        heir["name"] = profile["name"]
+        heir["relation"] = profile["relation"]
     if payload.name is not None:
         heir["name"] = payload.name
     if payload.relation is not None:
@@ -276,6 +280,26 @@ def patch_heir(heir_id: str, payload: HeirPatch, session: DemoSession = Depends(
         heir["co_resident"] = payload.co_resident
     if session.state.get("home_acquirer_id") == heir_id:
         session.state["acquirer_type"] = acquirer_type_for_heir(heir)
+    _reset_review_state(session, clear_run=True)
+    return _case_payload(session)
+
+
+@app.delete("/api/heirs/{heir_id}")
+def delete_heir(heir_id: str, session: DemoSession = Depends(get_session)) -> dict[str, Any]:
+    heirs = _ensure_heirs(session.state)
+    if not any(item["id"] == heir_id for item in heirs):
+        raise HTTPException(status_code=404, detail="heir_not_found")
+
+    remaining = [item for item in heirs if item["id"] != heir_id]
+    session.state["heirs"] = remaining
+    if session.state.get("home_acquirer_id") == heir_id:
+        if remaining:
+            next_acquirer = remaining[0]
+            session.state["home_acquirer_id"] = next_acquirer["id"]
+            session.state["acquirer_type"] = acquirer_type_for_heir(next_acquirer)
+        else:
+            session.state["home_acquirer_id"] = ""
+            session.state["acquirer_type"] = load_rules()["expert"]["demo_case"]["default_acquirer_type"]
     _reset_review_state(session, clear_run=True)
     return _case_payload(session)
 

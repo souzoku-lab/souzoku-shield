@@ -114,7 +114,10 @@ def test_static_ui_is_served() -> None:
         assert "レビュー完了するとWord出力できます" in script.text
         assert "③ Word出力できます" in script.text
         assert "書面添付資料のdocxがダウンロード" in script.text
-        assert "addHeir" in script.text
+        assert "submitHeir" in script.text
+        assert "deleteHeir" in script.text
+        assert "修正" in index.text
+        assert "修正を取消" in index.text
         assert "runCardReview" in script.text
         assert "renderGeminiEvidence" in script.text
         assert "Gemini 実行トレース（Function Calling）" in script.text
@@ -197,6 +200,58 @@ def test_heir_registration_adds_one_card_at_a_time() -> None:
     assert selected_body["state"]["home_acquirer_id"] == "second_son"
     assert selected_body["analysis"]["acquirer"]["id"] == "house_lost"
     assert selected_body["analysis"]["eligibility_alerts"][0]["impact_yen"] == 56000000
+
+
+def test_heir_edit_updates_relationship_and_selected_acquirer() -> None:
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        client.post(
+            "/api/heirs",
+            json={"relationship": "eldest_son", "co_resident": False},
+        )
+        response = client.patch(
+            "/api/heirs/eldest_son",
+            json={"relationship": "spouse", "co_resident": True},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"]["heirs"][0]["name"] == "配偶者"
+    assert body["state"]["heirs"][0]["relation"] == "spouse"
+    assert body["state"]["home_acquirer_id"] == "eldest_son"
+    assert body["analysis"]["acquirer"]["id"] == "spouse"
+    assert body["analysis"]["secondary_inheritance_alert"] is not None
+
+
+def test_delete_selected_heir_reselects_remaining_heir_and_recalculates() -> None:
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        client.post("/api/heirs", json={"relationship": "spouse", "co_resident": True})
+        client.post("/api/heirs", json={"relationship": "second_son", "co_resident": False})
+        client.patch("/api/case", json={"home_acquirer_id": "second_son"})
+        response = client.delete("/api/heirs/second_son")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [heir["id"] for heir in body["state"]["heirs"]] == ["spouse"]
+    assert body["state"]["home_acquirer_id"] == "spouse"
+    assert body["analysis"]["acquirer"]["id"] == "spouse"
+
+
+def test_delete_last_heir_returns_to_unregistered_state() -> None:
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        client.post("/api/heirs", json={"relationship": "eldest_son", "co_resident": True})
+        response = client.delete("/api/heirs/eldest_son")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"]["heirs"] == []
+    assert body["state"]["home_acquirer_id"] == ""
+    assert body["last_run"] is None
 
 
 def test_spouse_card_selection_surfaces_secondary_inheritance_alert() -> None:

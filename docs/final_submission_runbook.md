@@ -21,7 +21,7 @@ git ls-files
 
 - working treeがクリーン。
 - secret scanがOK。
-- pytest 50件が成功。
+- pytest 53件が成功。
 - Docker buildが成功し、コンテナの`/api/health`が`ok=true`を返す。
 - `.env`、ログ、検証一時ファイル、APIキーがgit管理対象に含まれない。
 - `google-genai==2.10.0`で再現性を固定する。

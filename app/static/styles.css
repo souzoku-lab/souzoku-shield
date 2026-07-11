@@ -657,6 +657,23 @@ h3 {
   background: #eef2f6;
 }
 
+.heir-card-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.heir-card-actions button {
+  min-width: 72px;
+}
+
+.heir-card-actions .danger-button {
+  color: #9b2c3b;
+  border-color: #ddb1b8;
+  background: #fff6f7;
+}
+
 .heir-card p {
   grid-column: 1 / -1;
   color: var(--muted);

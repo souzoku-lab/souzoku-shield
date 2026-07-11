@@ -46,7 +46,7 @@
           <span id="caseLand">土地情報</span>
         </div>
         <form class="heir-registration" id="heirRegistrationForm">
-          <strong>相続人登録</strong>
+          <strong id="heirFormTitle">相続人登録</strong>
           <label>
             <span>関係性</span>
             <select id="heirRelationshipSelect">
@@ -66,7 +66,8 @@
               <option value="separate">非同居</option>
             </select>
           </label>
-          <button type="submit">追加</button>
+          <button type="submit" id="heirSubmitButton">追加</button>
+          <button type="button" id="heirEditCancelButton" class="ghost-button" hidden>修正を取消</button>
           <div class="form-error" id="heirError" role="alert" hidden></div>
         </form>
         <div class="heir-board" id="heirBoard" aria-label="相続人と自宅取得者"></div>
