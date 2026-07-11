@@ -609,7 +609,18 @@ def _child_candidates() -> list[tuple[str, str]]:
 
 
 def _co_resident_for_label(text: str, label: str) -> bool:
-    negative_terms = ["別居", "賃貸", "借家", "持ち家なし", "持家なし", "自宅なし", "家なき子"]
+    negative_terms = [
+        "別居",
+        "非同居",
+        "賃貸",
+        "借家",
+        "持ち家なし",
+        "持家なし",
+        "持ち家のない",
+        "持家のない",
+        "自宅なし",
+        "家なき子",
+    ]
     for match in re.finditer(re.escape(label), text):
         sentence = _sentence_around(text, match.start(), match.end())
         if _has_any(sentence, negative_terms):
@@ -842,7 +853,9 @@ def _matches_co_resident(text: str) -> bool:
 
 
 def _has_co_resident_context(text: str) -> bool:
-    if _has_any(text, ["同居", "一緒に住", "住み続け", "居住継続", "一緒に暮ら", "共に暮ら"]):
+    if re.search(r"(?<!非)(?<!未)同居", text):
+        return True
+    if _has_any(text, ["一緒に住", "住み続け", "居住継続", "一緒に暮ら", "共に暮ら"]):
         return True
     return bool(
         re.search(
@@ -860,7 +873,7 @@ def _matches_house_lost(text: str) -> bool:
         return True
 
     person = r"(?:長男|長女|次男|次女|二男|二女|取得者|相続人|本人|子|息子|娘)"
-    lifestyle = r"(?:別居|賃貸|借家|持ち家なし|持家なし|3年以内|三年以内)"
+    lifestyle = r"(?:別居|非同居|賃貸|借家|持ち家なし|持家なし|持ち家のない|持家のない|3年以内|三年以内)"
     transfer = r"(?:相続|取得)"
     patterns = [
         rf"{lifestyle}.{{0,14}}{person}.{{0,24}}{transfer}",

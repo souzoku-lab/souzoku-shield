@@ -74,7 +74,7 @@ flowchart LR
 
 ## テスト証拠（DevOps）
 
-- `pytest` 58件（Gemini APIキー無しで完走する決定的コアの回帰＋公開デモのセッション分離・上限ガード・Cookie属性）。
+- `pytest` 59件（Gemini APIキー無しで完走する決定的コアの回帰＋公開デモのセッション分離・上限ガード・Cookie属性）。
 - 否認インパクトハーネスが、fault injectionで注入した分岐ミス・断定表現・総合所見の自動入力を **RED で落とす**。
 - **GitHub Actions CI + Cloud Runデプロイ**。CIは push ごとに「秘密情報スキャン → pytest → `docker build` → コンテナ起動＋`/api/health`」を実行（上部バッジ）。Cloud Runへのデプロイは同じ公開ツリーから明示的に実行します。
 - 画面右上の「Runtime Eval（6件）」は、現案件に対するランタイム評価JSON（各検査の合否と課税価格影響）。

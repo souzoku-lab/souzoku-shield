@@ -600,6 +600,24 @@ def test_unregistered_card_inference_treats_lived_with_decedent_as_co_resident()
     assert body["case"]["analysis"]["acquirer"]["id"] == "co_resident"
 
 
+def test_unregistered_card_inference_does_not_match_non_co_resident_as_co_resident() -> None:
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        response = client.post(
+            "/api/run",
+            json={"text": "持ち家のない非同居の次男が居宅敷地を取得します。"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    heirs = body["case"]["state"]["heirs"]
+    assert heirs[0]["id"] == "second_son"
+    assert heirs[0]["co_resident"] is False
+    assert body["case"]["state"]["home_acquirer_id"] == "second_son"
+    assert body["case"]["analysis"]["acquirer"]["id"] == "house_lost"
+
+
 def test_consultation_run_routes_house_lost_branch() -> None:
     with TestClient(app) as client:
         client.post("/api/demo/seed")
