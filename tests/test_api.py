@@ -1003,6 +1003,24 @@ def test_consultation_run_populates_heir_cards_when_unregistered() -> None:
     assert any(action["type"] == "ask_secondary_inheritance_review" for action in review_actions)
 
 
+def test_consultation_prefers_transfer_subject_over_earlier_possessive_heir() -> None:
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        response = client.post(
+            "/api/run",
+            json={
+                "text": "母の介護をしながら一緒に暮らしていた長男が、その家を受け継ぐ予定です。"
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["case"]["state"]["home_acquirer_id"] == "eldest_son"
+    assert body["case"]["analysis"]["home_acquirer"]["name"] == "長男"
+    assert body["case"]["analysis"]["acquirer"]["id"] == "co_resident"
+
+
 def test_consultation_run_populates_cards_and_flags_denied_value() -> None:
     with TestClient(app) as client:
         client.post("/api/demo/seed")
