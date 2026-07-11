@@ -38,7 +38,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     P[push / pull request] --> S[secret scan]
-    S --> T[pytest 56件]
+    S --> T[pytest 58件]
     T --> B[docker build]
     B --> H[container /api/health smoke]
     H -. CI成功後に明示デプロイ .-> C[Cloud Run]

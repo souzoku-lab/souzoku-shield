@@ -26,7 +26,14 @@ TOOL_DECLARATIONS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "acquirer_type": {"type": "string", "enum": ["spouse", "co_resident", "house_lost"]},
+                "acquirer_type": {
+                    "type": "string",
+                    "enum": ["spouse", "co_resident", "house_lost"],
+                    "description": (
+                        "spouse=配偶者が取得。co_resident=取得者が被相続人と同居・一緒に生活・"
+                        "暮らしていた。house_lost=取得者本人が別居・非同居・賃貸・持ち家なし。"
+                    ),
+                },
                 "reason": {"type": "string"},
             },
             "required": ["acquirer_type", "reason"],
@@ -272,8 +279,11 @@ def _gemini_router_prompt(text: str, rules: dict[str, Any]) -> str:
         f"{GEMINI_ROUTER_TOOL_NAME} だけを呼び出してください。"
         "目的は、相談文から自宅取得者の確認分岐を選ぶことだけです。"
         f"選択肢: {json.dumps(labels, ensure_ascii=False)}。"
-        "配偶者が自宅を相続する文脈なら spouse、同居親族が取得する文脈なら co_resident、"
-        "別居・賃貸・家なき子候補が取得する文脈なら house_lost を選んでください。"
+        "判定対象は自宅を相続・取得する本人です。"
+        "配偶者が取得するなら spouse。取得者が被相続人と同居、一緒に住んでいた、"
+        "被相続人と暮らしていた、故人と生活していた文脈なら co_resident。"
+        "取得者本人について別居、非同居、賃貸、借家、持ち家なしが明示された場合だけ"
+        " house_lost を選んでください。子・次男という続柄だけで house_lost と推測しないでください。"
         f"\n相談文: {text}"
     )
 
@@ -600,12 +610,11 @@ def _child_candidates() -> list[tuple[str, str]]:
 
 def _co_resident_for_label(text: str, label: str) -> bool:
     negative_terms = ["別居", "賃貸", "借家", "持ち家なし", "持家なし", "自宅なし", "家なき子"]
-    positive_terms = ["同居", "一緒に住", "住み続け", "居住継続"]
     for match in re.finditer(re.escape(label), text):
         sentence = _sentence_around(text, match.start(), match.end())
         if _has_any(sentence, negative_terms):
             return False
-        if _has_any(sentence, positive_terms):
+        if _has_co_resident_context(sentence):
             return True
     return False
 
@@ -829,7 +838,18 @@ def _matches_person_transfer(text: str, person_pattern: str) -> bool:
 
 
 def _matches_co_resident(text: str) -> bool:
-    return _has_any(text, ["同居", "一緒に住", "住み続け", "居住継続"])
+    return _has_co_resident_context(text)
+
+
+def _has_co_resident_context(text: str) -> bool:
+    if _has_any(text, ["同居", "一緒に住", "住み続け", "居住継続", "一緒に暮ら", "共に暮ら"]):
+        return True
+    return bool(
+        re.search(
+            r"(?:被相続人|故人)(?:と|と一緒に|と共に).{0,12}(?:暮ら|生活して)",
+            text,
+        )
+    )
 
 
 def _matches_house_lost(text: str) -> bool:
