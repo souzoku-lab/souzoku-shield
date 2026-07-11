@@ -105,6 +105,7 @@ def test_static_ui_is_served() -> None:
     with TestClient(app) as client:
         index = client.get("/")
         script = client.get("/static/app.js")
+        styles = client.get("/static/styles.css")
         assert index.status_code == 200
         assert "Souzoku Shield — 相続の盾" in index.text
         assert "公開用の架空デモです。" in index.text
@@ -157,6 +158,9 @@ def test_static_ui_is_served() -> None:
         assert script.status_code == 200
         assert "現在案件インパクト" in script.text
         assert "課税価格" in script.text
+        assert styles.status_code == 200
+        assert ".review-impact b" in styles.text
+        assert "word-break: keep-all" in styles.text
         assert "Gemini 3.5 Flash 実接続" in script.text
         assert "カード内容でReview作成" in script.text
         assert "レビュー完了（承認）" in script.text
