@@ -47,6 +47,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 SESSION_COOKIE = "souzoku_sid"
 SESSION_TTL_SECONDS = 30 * 60  # 30分。審査員が離席してもデモが混ざらないよう自然失効させる。
+RUN_COOLDOWN_SECONDS = 2.0
+RUN_LIMIT_PER_SESSION = 20
 
 
 @dataclass
@@ -57,6 +59,10 @@ class DemoSession:
     last_run: dict[str, Any] | None = None
     word_export_approved: bool = False
     touched_at: float = field(default_factory=time.time)
+    run_count: int = 0
+    last_run_started_at: float = 0.0
+    run_in_progress: bool = False
+    run_guard: Lock = field(default_factory=Lock, repr=False, compare=False)
 
 
 class SessionStore:
@@ -162,6 +168,8 @@ def health() -> dict[str, Any]:
         "storage": "memory",
         "llm_required": False,
         "gemini_configured": bool(os.getenv("GEMINI_API_KEY")),
+        "version": os.getenv("APP_VERSION", "local"),
+        "revision": os.getenv("K_REVISION", "local"),
     }
 
 
@@ -220,35 +228,43 @@ def create_intake(payload: IntakeRequest, session: DemoSession = Depends(get_ses
 @app.post("/api/run")
 def run_agent(payload: ConsultationRunRequest, session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     """相談文からACTIONタイムラインを起動する。応答文は返さず状態を更新する。"""
-    rules = load_rules()
-    next_state, run = build_agent_run(
-        consultation_text=payload.text,
-        state=copy.deepcopy(session.state),
-        rules=rules,
-        gemini_configured=bool(os.getenv("GEMINI_API_KEY")),
-    )
-    session.state = next_state
-    session.state["manual_inputs"] = _default_manual_inputs()
-    session.last_run = run
-    _reset_approval(session)
-    return {"ok": True, "run": copy.deepcopy(run), "case": _case_payload(session)}
+    _reserve_agent_run(session)
+    try:
+        rules = load_rules()
+        next_state, run = build_agent_run(
+            consultation_text=payload.text,
+            state=copy.deepcopy(session.state),
+            rules=rules,
+            gemini_configured=bool(os.getenv("GEMINI_API_KEY")),
+        )
+        session.state = next_state
+        session.state["manual_inputs"] = _default_manual_inputs()
+        session.last_run = run
+        _reset_approval(session)
+        return {"ok": True, "run": copy.deepcopy(run), "case": _case_payload(session)}
+    finally:
+        _finish_agent_run(session)
 
 
 @app.post("/api/review/from-cards")
 def run_review_from_cards(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     """相談文なしで、登録済み相続人カードからReview到達状態を作る。"""
     _ensure_card_review_inputs(session)
-    rules = load_rules()
-    next_state, run = build_card_review_run(
-        state=copy.deepcopy(session.state),
-        rules=rules,
-        gemini_configured=bool(os.getenv("GEMINI_API_KEY")),
-    )
-    session.state = next_state
-    session.state["manual_inputs"] = _default_manual_inputs()
-    session.last_run = run
-    _reset_approval(session)
-    return {"ok": True, "run": copy.deepcopy(run), "case": _case_payload(session)}
+    _reserve_agent_run(session)
+    try:
+        rules = load_rules()
+        next_state, run = build_card_review_run(
+            state=copy.deepcopy(session.state),
+            rules=rules,
+            gemini_configured=bool(os.getenv("GEMINI_API_KEY")),
+        )
+        session.state = next_state
+        session.state["manual_inputs"] = _default_manual_inputs()
+        session.last_run = run
+        _reset_approval(session)
+        return {"ok": True, "run": copy.deepcopy(run), "case": _case_payload(session)}
+    finally:
+        _finish_agent_run(session)
 
 
 @app.patch("/api/documents/{document_id}")
@@ -412,6 +428,35 @@ def _rules_summary(rules: dict[str, Any]) -> dict[str, Any]:
 
 def _reset_approval(session: DemoSession) -> None:
     session.word_export_approved = False
+
+
+def _reserve_agent_run(session: DemoSession) -> None:
+    now = time.monotonic()
+    with session.run_guard:
+        if session.run_in_progress:
+            raise HTTPException(status_code=409, detail="run_in_progress")
+        if session.run_count >= RUN_LIMIT_PER_SESSION:
+            raise HTTPException(
+                status_code=429,
+                detail="run_limit_exceeded",
+                headers={"Retry-After": str(SESSION_TTL_SECONDS)},
+            )
+        elapsed = now - session.last_run_started_at
+        if session.last_run_started_at and elapsed < RUN_COOLDOWN_SECONDS:
+            retry_after = max(1, int(RUN_COOLDOWN_SECONDS - elapsed + 0.999))
+            raise HTTPException(
+                status_code=429,
+                detail="run_cooldown",
+                headers={"Retry-After": str(retry_after)},
+            )
+        session.run_in_progress = True
+        session.run_count += 1
+        session.last_run_started_at = now
+
+
+def _finish_agent_run(session: DemoSession) -> None:
+    with session.run_guard:
+        session.run_in_progress = False
 
 
 def _reset_review_state(session: DemoSession, *, clear_run: bool = False) -> None:

@@ -38,15 +38,16 @@ flowchart LR
 ```mermaid
 flowchart LR
     P[push / pull request] --> S[secret scan]
-    S --> T[pytest 53件]
+    S --> T[pytest 56件]
     T --> B[docker build]
     B --> H[container /api/health smoke]
-    H --> C[Cloud Run deploy]
+    H -. CI成功後に明示デプロイ .-> C[Cloud Run]
 ```
 
 ## デモで確認できること
 
 - 相続人カードを登録し、自宅取得者をクリックで選べる。
+- 登録した相続人の関係性・同居区分を修正し、誤登録したカードを削除できる。
 - 相談文なしでも相続人カードだけでReview作成できる。
 - 相談文を入れた場合は、Geminiが`select_taker_branch`で取得者区分を選ぶ。
 - 同居親族や配偶者がいるのに別居親族が自宅を取得する場合、適用不可アラートを出す。
@@ -61,6 +62,7 @@ flowchart LR
 - 相談文はGemini APIへ送信されます。
 - 状態は訪問者間でセッション分離されます。インスタンス再起動時には初期化される一時状態です。
 - CORSは開放していません。
+- 相談文は8〜1200文字、AI実行は2秒cooldown・1セッション20回までです。
 - Gemini APIキーはSecret Managerで管理し、GitHubには含めません。
 
 ## 未実装のもの

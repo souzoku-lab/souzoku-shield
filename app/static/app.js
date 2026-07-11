@@ -572,8 +572,10 @@ let isRunning = false;
 function setRunning(running) {
   isRunning = running;
   const status = qs("#runStatus");
+  const state = currentPayload && currentPayload.state;
+  const cardReady = Boolean(state && Array.isArray(state.heirs) && state.heirs.length > 0 && state.home_acquirer_id);
   qs("#runButton").disabled = running;
-  qs("#cardReviewButton").disabled = running || qs("#cardReviewButton").disabled;
+  qs("#cardReviewButton").disabled = running || !cardReady;
   if (running) {
     status.hidden = false;
     status.textContent = "Geminiが相談文を確認中…（エージェント実行中）";
@@ -640,6 +642,15 @@ function apiErrorMessage(status, body) {
   }
   if (detail === "home_acquirer_required_for_review") {
     return "自宅取得者を選択してからReview作成してください。";
+  }
+  if (detail === "run_in_progress") {
+    return "処理中です。完了するまでお待ちください。";
+  }
+  if (detail === "run_cooldown") {
+    return "連続実行を防止しています。少し待ってから再実行してください。";
+  }
+  if (detail === "run_limit_exceeded") {
+    return "このセッションの実行上限に達しました。新しいセッションでお試しください。";
   }
   if (typeof detail === "string" && detail) {
     return detail;

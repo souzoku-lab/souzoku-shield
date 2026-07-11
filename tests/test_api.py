@@ -3,9 +3,12 @@ from __future__ import annotations
 from io import BytesIO
 from types import SimpleNamespace
 
+import pytest
 from docx import Document
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+import app.main as main_module
 from app import agent_run
 from app.main import app
 
@@ -17,6 +20,8 @@ def test_health_and_case_payload() -> None:
         assert health.status_code == 200
         assert health.json()["ok"] is True
         assert health.json()["llm_required"] is False
+        assert health.json()["version"] == "local"
+        assert health.json()["revision"] == "local"
 
         case = client.get("/api/case")
         assert case.status_code == 200
@@ -26,6 +31,50 @@ def test_health_and_case_payload() -> None:
         assert body["analysis"]["draft"]["section_5_overall_opinion"] == ""
         assert body["harness"]["ok"] is True
         assert body["harness"]["impact_note"] == "課税価格 +5,600万円（失われる評価減）"
+
+
+def test_health_exposes_deployed_version_and_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_VERSION", "abc1234")
+    monkeypatch.setenv("K_REVISION", "souzoku-agent-00003-test")
+
+    with TestClient(app) as client:
+        body = client.get("/api/health").json()
+
+    assert body["version"] == "abc1234"
+    assert body["revision"] == "souzoku-agent-00003-test"
+
+
+def test_agent_run_cooldown_returns_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main_module, "RUN_COOLDOWN_SECONDS", 5.0)
+
+    with TestClient(app) as client:
+        first = client.post("/api/run", json={"text": "長男が同居して自宅を相続する予定です。"})
+        second = client.post("/api/run", json={"text": "次男が別居して自宅を相続する予定です。"})
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.json()["detail"] == "run_cooldown"
+    assert int(second.headers["retry-after"]) >= 1
+
+
+def test_agent_run_limit_and_in_progress_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main_module, "RUN_LIMIT_PER_SESSION", 2)
+
+    with TestClient(app) as client:
+        first = client.post("/api/run", json={"text": "長男が同居して自宅を相続する予定です。"})
+        second = client.post("/api/run", json={"text": "次男が別居して自宅を相続する予定です。"})
+        third = client.post("/api/review/from-cards")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 429
+    assert third.json()["detail"] == "run_limit_exceeded"
+
+    session = main_module.DemoSession(run_in_progress=True)
+    with pytest.raises(HTTPException) as caught:
+        main_module._reserve_agent_run(session)
+    assert caught.value.status_code == 409
+    assert caught.value.detail == "run_in_progress"
 
 
 def test_case_patch_changes_counterfactual_branch() -> None:

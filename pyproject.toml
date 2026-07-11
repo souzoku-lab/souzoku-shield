@@ -2,7 +2,7 @@
 name = "souzoku-attachment-agent"
 version = "0.1.0"
 description = "Hackathon M1 demo for deterministic inheritance tax attachment drafting"
-requires-python = ">=3.11"
+requires-python = ">=3.13,<3.14"
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",

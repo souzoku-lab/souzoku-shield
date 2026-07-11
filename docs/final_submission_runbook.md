@@ -21,7 +21,7 @@ git ls-files
 
 - working treeがクリーン。
 - secret scanがOK。
-- pytest 53件が成功。
+- pytest 56件が成功。
 - Docker buildが成功し、コンテナの`/api/health`が`ok=true`を返す。
 - `.env`、ログ、検証一時ファイル、APIキーがgit管理対象に含まれない。
 - `google-genai==2.10.0`で再現性を固定する。
@@ -69,7 +69,7 @@ deploy前に報告する項目:
 | rollback先revision | 現在traffic 100%のrevision |
 | デプロイ対象SHA | 公開mainの`git rev-parse HEAD` |
 
-コマンドでは必ず`--project`を明示する。失敗時は旧revisionへ戻せる状態を維持する。
+コマンドでは必ず`--project`を明示し、`APP_VERSION=<公開main SHA>`を設定する。失敗時は旧revisionへ戻せる状態を維持する。
 
 ## 4. Gemini実接続証拠
 
@@ -86,6 +86,17 @@ deploy前に報告する項目:
 - 期待ルート`spouse`、`co_resident`、`house_lost`を各3言い換え、合計9件。
 - 入力文、期待ルート、実際のルート、Function名、fallback有無、latency、合否を記録。
 
+公開E2Eと合わせた機械実行:
+
+```powershell
+python scripts\production_evidence.py `
+  --base-url https://souzoku-agent-698253423667.asia-northeast1.run.app `
+  --output C:\tmp\souzoku-shield-production-evidence.json `
+  --word-output C:\tmp\souzoku-shield-production.docx
+```
+
+証拠JSONは公開リポジトリへ追加せず、提出時の確認記録として保管する。
+
 ## 5. 公開E2E確認
 
 - ログアウト状態で開ける。
@@ -98,6 +109,9 @@ deploy前に報告する項目:
 - 承認前はWord出力不可、承認後のみWord出力可能。
 - Microsoft Wordで`.docx`を開け、破損警告・文字化けがない。
 - 初期化が別セッションへ影響しない。
+- 相談文8〜1200文字、2秒cooldown、1セッション20回上限、同時実行防止が有効。
+
+Gemini APIのクォータ・予算通知はリポジトリ内の機能ではなくGoogle Cloud側の設定であるため、デプロイ前に対象projectのBudget alertsとAPI quotaを別途確認する。
 
 ## 6. ユーザーが行う提出作業
 

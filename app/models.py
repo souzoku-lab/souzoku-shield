@@ -69,6 +69,8 @@ class HealthResponse(BaseModel):
     storage: str
     llm_required: bool
     gemini_configured: bool
+    version: str
+    revision: str
 
 
 class IntakeRequest(BaseModel):

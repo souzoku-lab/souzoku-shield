@@ -74,7 +74,7 @@ flowchart LR
 
 ## テスト証拠（DevOps）
 
-- `pytest` 53件（Gemini APIキー無しで完走する決定的コアの回帰＋公開デモのセッション分離・上限ガード・Cookie属性）。
+- `pytest` 56件（Gemini APIキー無しで完走する決定的コアの回帰＋公開デモのセッション分離・上限ガード・Cookie属性）。
 - 否認インパクトハーネスが、fault injectionで注入した分岐ミス・断定表現・総合所見の自動入力を **RED で落とす**。
 - **GitHub Actions CI + Cloud Runデプロイ**。CIは push ごとに「秘密情報スキャン → pytest → `docker build` → コンテナ起動＋`/api/health`」を実行（上部バッジ）。Cloud Runへのデプロイは同じ公開ツリーから明示的に実行します。
 - 画面右上の「Runtime Eval（6件）」は、現案件に対するランタイム評価JSON（各検査の合否と課税価格影響）。
@@ -93,6 +93,7 @@ python scripts\verify_no_secrets.py
   - 実顧客データの保存・永続化、税理士本人認証、永続監査ログ
 - **公開デモには実名・住所・マイナンバー・実案件情報を入力しないでください。** 相談文はGemini APIへ送信されます。
 - 状態はメモリ保存の架空単一デモで、**訪問者ごとにセッション分離**（他の閲覧者の相談・承認は見えません）。インスタンス再起動時には初期化される一時状態です。CORSは開放していません。
+- 相談文は8〜1200文字、AI実行は2秒cooldown・1セッション20回までです。画面とAPIの両方で二重送信を抑止します。
 - Gemini APIキーは **Secret Manager** 管理でリポジトリには含めません。
 
 ## ローカル実行
@@ -109,7 +110,7 @@ python -m venv .venv
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/health` | ヘルスチェック（`gemini_configured` を含む） |
+| GET | `/api/health` | ヘルスチェック（Gemini設定、公開SHA、Cloud Run revisionを含む） |
 | POST | `/api/demo/seed` | デモ状態に戻す |
 | POST | `/api/demo/clear-heirs` | 相続人カード未登録のデモ状態に戻す |
 | GET | `/api/case` | 案件、ドラフト、反実仮想、ハーネス、承認状態を取得 |
@@ -118,6 +119,7 @@ python -m venv .venv
 | POST | `/api/review/from-cards` | 相談文なしで相続人カードからReviewを作成 |
 | POST | `/api/heirs` | 関係性と同居有無から相続人カードを追加 |
 | PATCH | `/api/heirs/{heir_id}` | 相続人名、続柄、同居有無を更新 |
+| DELETE | `/api/heirs/{heir_id}` | 相続人カードを削除し、必要なら自宅取得者を再選択 |
 | PATCH | `/api/manual/overall-opinion` | 税理士の手入力による総合所見を保存 |
 | POST | `/api/approve` | Review到達後のHITL承認を記録しWord出力を許可 |
 | PATCH | `/api/documents/{document_id}` | 資料ステータスを変更 |
