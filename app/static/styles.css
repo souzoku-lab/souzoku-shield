@@ -826,7 +826,8 @@ h3 {
 }
 
 .eligibility-impact b {
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
+  word-break: keep-all;
   line-height: 1.05;
   font-size: 34px;
   font-weight: 900;
@@ -835,7 +836,8 @@ h3 {
 .harness-impact {
   display: block;
   margin-top: 8px;
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
+  word-break: keep-all;
   color: var(--ink);
   line-height: 1.1;
   font-size: 22px;
