@@ -41,6 +41,7 @@ def _client(base_url: str) -> httpx.Client:
 def _run_case(base_url: str, case_id: str, text: str, expected: str) -> dict[str, Any]:
     with _client(base_url) as client:
         client.post("/api/demo/seed").raise_for_status()
+        client.post("/api/demo/clear-heirs").raise_for_status()
         response = client.post("/api/run", json={"text": text})
         response.raise_for_status()
         payload = response.json()
@@ -48,18 +49,25 @@ def _run_case(base_url: str, case_id: str, text: str, expected: str) -> dict[str
     run = payload["run"]
     gemini = run["gemini"]
     actual = payload["case"]["analysis"]["acquirer"]["id"]
+    gemini_route = str(gemini.get("arguments", {}).get("acquirer_type", ""))
+    state = payload["case"]["state"]
+    cards_inferred = bool(state.get("heirs") and state.get("home_acquirer_id"))
     fallback = not bool(gemini.get("used"))
     passed = (
         run.get("mode") == "gemini_function_calling"
         and gemini.get("tool_name") == "select_taker_branch"
+        and gemini_route == expected
         and actual == expected
+        and cards_inferred
         and not fallback
     )
     return {
         "id": case_id,
         "input": text,
         "expected_route": expected,
+        "gemini_route": gemini_route,
         "actual_route": actual,
+        "cards_inferred": cards_inferred,
         "mode": run.get("mode"),
         "function": gemini.get("tool_name"),
         "fallback": fallback,
