@@ -452,9 +452,10 @@ h3 {
 }
 
 .review-impact b {
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
+  word-break: keep-all;
   line-height: 1.05;
-  font-size: 34px;
+  font-size: 24px;
   font-weight: 900;
 }
 
