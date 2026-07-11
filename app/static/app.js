@@ -8,6 +8,17 @@ const statusLabels = {
 const statusOrder = ["not_requested", "requested", "received", "verified"];
 
 let currentPayload = null;
+let editingHeirId = null;
+
+const HEIR_RELATIONSHIP_BY_NAME = {
+  "配偶者": "spouse",
+  "長男": "eldest_son",
+  "長女": "eldest_daughter",
+  "次男": "second_son",
+  "次女": "second_daughter",
+  "三男": "third_son",
+  "三女": "third_daughter",
+};
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -36,7 +47,8 @@ function render(payload) {
   renderCase(analysis);
   renderControls(payload.state, rules_summary, analysis);
   renderApproval(approval, payload.state);
-  renderRun(last_run);
+  renderRun(last_run, approval);
+  renderGeminiEvidence(last_run);
   renderMetrics(analysis, harness);
   renderKanban(analysis, rules_summary);
   renderDraft(analysis, payload.manual_inputs || {});
@@ -96,7 +108,7 @@ function renderApproval(approval, state) {
         : "相続人カードを登録すると、相談文なしでもReview作成できます。";
 }
 
-function renderRun(run) {
+function renderRun(run, approval) {
   const timeline = qs("#runTimeline");
   const mode = qs("#runMode");
   timeline.innerHTML = "";
@@ -104,12 +116,75 @@ function renderRun(run) {
     mode.textContent = "決定的リプレイ";
     const empty = document.createElement("div");
     empty.className = "timeline-step";
-    empty.innerHTML = "<strong>待機中</strong><p>相続人カードからReview作成、または相談文を実行するとACTIONタイムラインを表示します。</p>";
+    empty.innerHTML = "<strong>待機中</strong><p>「① AIエージェントを実行」、またはカード内容でReview作成するとACTIONタイムラインを表示します。</p>";
     timeline.appendChild(empty);
     return;
   }
   mode.textContent = runModeLabel(run);
-  run.steps.forEach((step) => timeline.appendChild(timelineStep(step)));
+  const approved = Boolean(approval && approval.word_export_enabled);
+  run.steps.forEach((step) => timeline.appendChild(timelineStep(step, approved)));
+}
+
+function renderGeminiEvidence(run) {
+  const box = qs("#geminiEvidence");
+  box.innerHTML = "";
+  if (!run || !run.gemini) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const g = run.gemini;
+  const used = Boolean(g.used);
+  box.className = `gemini-evidence ${used ? "live" : g.configured ? "fallback" : "local"}`;
+
+  const head = document.createElement("div");
+  head.className = "gemini-evidence-head";
+  const label = document.createElement("strong");
+  label.textContent = used
+    ? "Gemini 実行トレース（Function Calling）"
+    : g.configured
+      ? "Gemini fallback（決定的コアで継続）"
+      : "Gemini 未接続（決定的リプレイ）";
+  const badge = document.createElement("span");
+  badge.className = `gemini-badge ${used ? "green" : "amber"}`;
+  badge.textContent = used ? "実接続" : "fallback";
+  head.append(label, badge);
+  box.appendChild(head);
+
+  const acquirer = g.arguments && g.arguments.acquirer_type ? g.arguments.acquirer_type : "—";
+  const rows = document.createElement("dl");
+  rows.className = "gemini-evidence-rows";
+  const entries = [
+    ["model", g.model || "—"],
+    ["tool", used ? g.tool_name || "—" : "—"],
+    ["result", used ? acquirer : "—"],
+    ["latency", `${Number(g.latency_ms || 0)}ms`],
+    ["fallback", used ? "なし" : fallbackLabel(g.fallback_reason) || "—"],
+  ];
+  entries.forEach(([key, value]) => {
+    const dt = document.createElement("dt");
+    dt.textContent = key;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    rows.append(dt, dd);
+  });
+  box.appendChild(rows);
+
+  if (used && g.arguments && g.arguments.reason) {
+    const reason = document.createElement("p");
+    reason.className = "gemini-reason";
+    reason.textContent = `理由: ${g.arguments.reason}`;
+    box.appendChild(reason);
+  }
+}
+
+function fallbackLabel(reason) {
+  const map = {
+    gemini_api_key_not_set: "APIキー未設定（決定的リプレイ）",
+    gemini_no_function_call: "function call無し→決定的コアで継続",
+    gemini_invalid_tool_call: "無効なtool呼び出し→決定的コアで継続",
+  };
+  return map[reason] || (reason ? `${reason}→決定的コアで継続` : "");
 }
 
 function runModeLabel(run) {
@@ -122,18 +197,24 @@ function runModeLabel(run) {
   return "決定的リプレイ";
 }
 
-function timelineStep(step) {
+function timelineStep(step, approved) {
+  const isReview = step.id === "review";
+  const reviewDone = isReview && Boolean(approved);
+  const pending = step.status === "PENDING_APPROVAL" && !reviewDone;
+
   const item = document.createElement("article");
-  item.className = `timeline-step ${step.status === "PENDING_APPROVAL" ? "pending" : ""}`;
+  item.className = `timeline-step ${pending ? "pending" : ""} ${reviewDone ? "approved" : ""}`.trim();
   const title = document.createElement("strong");
   title.textContent = step.label;
   const badge = document.createElement("span");
-  badge.className = `badge ${step.status === "PENDING_APPROVAL" ? "red" : "green"}`;
-  badge.textContent = step.status === "PENDING_APPROVAL" ? "レビュー完了待ち" : "DONE";
+  badge.className = `badge ${pending ? "red" : "green"}`;
+  badge.textContent = pending ? "レビュー完了待ち" : reviewDone ? "レビュー完了" : "DONE";
   title.appendChild(badge);
 
   const summary = document.createElement("p");
-  summary.textContent = step.summary;
+  summary.textContent = reviewDone
+    ? "税理士がレビュー完了（承認）しました。書面添付資料をWord出力できます。"
+    : step.summary;
   const actions = document.createElement("ul");
   step.actions.slice(0, 4).forEach((action) => {
     const li = document.createElement("li");
@@ -149,18 +230,20 @@ function timelineStep(step) {
     item.appendChild(secondaryPromptCard(secondaryPrompt));
   }
   if (approvalAction) {
-    item.appendChild(reviewCompletionCard(approvalAction));
+    item.appendChild(reviewCompletionCard(approvalAction, reviewDone));
   }
   return item;
 }
 
-function reviewCompletionCard(action) {
+function reviewCompletionCard(action, done) {
   const card = document.createElement("div");
-  card.className = "review-completion-card";
+  card.className = `review-completion-card ${done ? "done" : ""}`.trim();
   const title = document.createElement("strong");
-  title.textContent = "レビュー完了にする操作";
+  title.textContent = done ? "レビュー完了（承認済み）" : "レビュー完了にする操作";
   const message = document.createElement("p");
-  message.textContent = action.reason;
+  message.textContent = done
+    ? "税理士が承認しました。承認後だけ書面添付資料をWord出力できます。"
+    : action.reason;
   card.append(title, message);
   return card;
 }
@@ -246,12 +329,33 @@ function renderControls(state, summary, analysis) {
     toggle.disabled = heir.relation === "spouse";
     toggle.addEventListener("click", () => patchHeir(heir.id, { co_resident: !heir.co_resident }));
 
+    const actions = document.createElement("div");
+    actions.className = "heir-card-actions";
+
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.dataset.action = "edit-heir";
+    edit.textContent = "修正";
+    edit.addEventListener("click", () => beginHeirEdit(heir));
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.dataset.action = "delete-heir";
+    remove.className = "danger-button";
+    remove.textContent = "削除";
+    remove.addEventListener("click", () => {
+      if (!window.confirm(`${heir.name}を削除しますか？`)) return;
+      deleteHeir(heir.id).catch((error) => setHeirError(error.message));
+    });
+
+    actions.append(edit, remove);
+
     const meta = document.createElement("p");
     meta.textContent = selected
       ? `${analysis.acquirer.label}として要件確認中`
       : "クリックで自宅取得者に設定";
 
-    card.append(relation, name, status, choose, toggle, meta);
+    card.append(relation, name, status, choose, toggle, actions, meta);
     board.appendChild(card);
   });
 
@@ -411,14 +515,47 @@ async function patchHeir(heirId, patch) {
   render(currentPayload);
 }
 
-async function addHeir() {
+function relationshipForHeir(heir) {
+  return HEIR_RELATIONSHIP_BY_NAME[heir.name] || (heir.relation === "spouse" ? "spouse" : "eldest_son");
+}
+
+function beginHeirEdit(heir) {
+  editingHeirId = heir.id;
+  qs("#heirRelationshipSelect").value = relationshipForHeir(heir);
+  qs("#heirResidenceSelect").value = heir.co_resident ? "co_resident" : "separate";
+  qs("#heirFormTitle").textContent = `${heir.name}を修正`;
+  qs("#heirSubmitButton").textContent = "更新";
+  qs("#heirEditCancelButton").hidden = false;
+  setHeirError("");
+  qs("#heirRelationshipSelect").focus();
+}
+
+function cancelHeirEdit() {
+  editingHeirId = null;
+  qs("#heirFormTitle").textContent = "相続人登録";
+  qs("#heirSubmitButton").textContent = "追加";
+  qs("#heirEditCancelButton").hidden = true;
+  qs("#heirRelationshipSelect").value = "spouse";
+  qs("#heirResidenceSelect").value = "co_resident";
+  setHeirError("");
+}
+
+async function submitHeir() {
   const relationship = qs("#heirRelationshipSelect").value;
   const coResident = qs("#heirResidenceSelect").value === "co_resident";
-  currentPayload = await api("/api/heirs", {
-    method: "POST",
+  const heirId = editingHeirId;
+  currentPayload = await api(heirId ? `/api/heirs/${heirId}` : "/api/heirs", {
+    method: heirId ? "PATCH" : "POST",
     body: JSON.stringify({ relationship, co_resident: coResident }),
   });
   render(currentPayload);
+  cancelHeirEdit();
+}
+
+async function deleteHeir(heirId) {
+  currentPayload = await api(`/api/heirs/${heirId}`, { method: "DELETE" });
+  render(currentPayload);
+  if (editingHeirId === heirId) cancelHeirEdit();
   setHeirError("");
 }
 
@@ -430,25 +567,56 @@ async function saveOverallOpinion(value) {
   render(currentPayload);
 }
 
+let isRunning = false;
+
+function setRunning(running) {
+  isRunning = running;
+  const status = qs("#runStatus");
+  const state = currentPayload && currentPayload.state;
+  const cardReady = Boolean(state && Array.isArray(state.heirs) && state.heirs.length > 0 && state.home_acquirer_id);
+  qs("#runButton").disabled = running;
+  qs("#cardReviewButton").disabled = running || !cardReady;
+  if (running) {
+    status.hidden = false;
+    status.textContent = "Geminiが相談文を確認中…（エージェント実行中）";
+  } else {
+    status.hidden = true;
+    status.textContent = "";
+    qs("#runButton").disabled = false;
+  }
+}
+
 async function runConsultation() {
+  if (isRunning) return;
   const text = qs("#consultationText").value.trim();
   if (!text) {
     setRunError("相談文は8文字以上で入力してください。");
     return;
   }
   setRunError("");
-  const result = await api("/api/run", { method: "POST", body: JSON.stringify({ text }) });
-  currentPayload = result.case;
-  render(currentPayload);
-  setRunError("");
+  setRunning(true);
+  try {
+    const result = await api("/api/run", { method: "POST", body: JSON.stringify({ text }) });
+    currentPayload = result.case;
+    render(currentPayload);
+    setRunError("");
+  } finally {
+    setRunning(false);
+  }
 }
 
 async function runCardReview() {
+  if (isRunning) return;
   setRunError("");
-  const result = await api("/api/review/from-cards", { method: "POST" });
-  currentPayload = result.case;
-  render(currentPayload);
-  setRunError("");
+  setRunning(true);
+  try {
+    const result = await api("/api/review/from-cards", { method: "POST" });
+    currentPayload = result.case;
+    render(currentPayload);
+    setRunError("");
+  } finally {
+    setRunning(false);
+  }
 }
 
 async function approveWord() {
@@ -474,6 +642,15 @@ function apiErrorMessage(status, body) {
   }
   if (detail === "home_acquirer_required_for_review") {
     return "自宅取得者を選択してからReview作成してください。";
+  }
+  if (detail === "run_in_progress") {
+    return "処理中です。完了するまでお待ちください。";
+  }
+  if (detail === "run_cooldown") {
+    return "連続実行を防止しています。少し待ってから再実行してください。";
+  }
+  if (detail === "run_limit_exceeded") {
+    return "このセッションの実行上限に達しました。新しいセッションでお試しください。";
   }
   if (typeof detail === "string" && detail) {
     return detail;
@@ -563,10 +740,12 @@ qs("#seedButton").addEventListener("click", async () => {
 
 qs("#heirRegistrationForm").addEventListener("submit", (event) => {
   event.preventDefault();
-  addHeir().catch((error) => {
+  submitHeir().catch((error) => {
     setHeirError(error.message);
   });
 });
+
+qs("#heirEditCancelButton").addEventListener("click", cancelHeirEdit);
 
 qs("#cardReviewButton").addEventListener("click", () => {
   runCardReview().catch((error) => {

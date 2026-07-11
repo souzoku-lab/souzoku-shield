@@ -3,9 +3,12 @@ from __future__ import annotations
 from io import BytesIO
 from types import SimpleNamespace
 
+import pytest
 from docx import Document
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+import app.main as main_module
 from app import agent_run
 from app.main import app
 
@@ -17,6 +20,8 @@ def test_health_and_case_payload() -> None:
         assert health.status_code == 200
         assert health.json()["ok"] is True
         assert health.json()["llm_required"] is False
+        assert health.json()["version"] == "local"
+        assert health.json()["revision"] == "local"
 
         case = client.get("/api/case")
         assert case.status_code == 200
@@ -26,6 +31,50 @@ def test_health_and_case_payload() -> None:
         assert body["analysis"]["draft"]["section_5_overall_opinion"] == ""
         assert body["harness"]["ok"] is True
         assert body["harness"]["impact_note"] == "課税価格 +5,600万円（失われる評価減）"
+
+
+def test_health_exposes_deployed_version_and_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_VERSION", "abc1234")
+    monkeypatch.setenv("K_REVISION", "souzoku-agent-00003-test")
+
+    with TestClient(app) as client:
+        body = client.get("/api/health").json()
+
+    assert body["version"] == "abc1234"
+    assert body["revision"] == "souzoku-agent-00003-test"
+
+
+def test_agent_run_cooldown_returns_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main_module, "RUN_COOLDOWN_SECONDS", 5.0)
+
+    with TestClient(app) as client:
+        first = client.post("/api/run", json={"text": "長男が同居して自宅を相続する予定です。"})
+        second = client.post("/api/run", json={"text": "次男が別居して自宅を相続する予定です。"})
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.json()["detail"] == "run_cooldown"
+    assert int(second.headers["retry-after"]) >= 1
+
+
+def test_agent_run_limit_and_in_progress_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main_module, "RUN_LIMIT_PER_SESSION", 2)
+
+    with TestClient(app) as client:
+        first = client.post("/api/run", json={"text": "長男が同居して自宅を相続する予定です。"})
+        second = client.post("/api/run", json={"text": "次男が別居して自宅を相続する予定です。"})
+        third = client.post("/api/review/from-cards")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert third.status_code == 429
+    assert third.json()["detail"] == "run_limit_exceeded"
+
+    session = main_module.DemoSession(run_in_progress=True)
+    with pytest.raises(HTTPException) as caught:
+        main_module._reserve_agent_run(session)
+    assert caught.value.status_code == 409
+    assert caught.value.detail == "run_in_progress"
 
 
 def test_case_patch_changes_counterfactual_branch() -> None:
@@ -57,10 +106,17 @@ def test_static_ui_is_served() -> None:
         index = client.get("/")
         script = client.get("/static/app.js")
         assert index.status_code == 200
-        assert "小規模宅地 要件確認＆書面添付資料作成" in index.text
+        assert "Souzoku Shield — 相続の盾" in index.text
+        assert "公開用の架空デモです。" in index.text
+        assert "実名・住所・マイナンバー・実案件情報は入力しないでください" in index.text
+        assert "60秒デモを初期化" in index.text
+        assert "Runtime Eval（6件）" in index.text
+        assert "pytest視点" not in index.text
+        assert 'id="geminiEvidence"' in index.text
+        assert 'id="runStatus"' in index.text
         assert "Review作成" in index.text
         assert "カード内容でReview作成" in index.text
-        assert "相談文を実行" in index.text
+        assert "① AIエージェントを実行" in index.text
         assert "① カード登録・Review作成" in index.text
         assert "② レビュー完了（承認）" in index.text
         assert "③ 書面添付資料をWord出力" in index.text
@@ -107,8 +163,14 @@ def test_static_ui_is_served() -> None:
         assert "レビュー完了するとWord出力できます" in script.text
         assert "③ Word出力できます" in script.text
         assert "書面添付資料のdocxがダウンロード" in script.text
-        assert "addHeir" in script.text
+        assert "submitHeir" in script.text
+        assert "deleteHeir" in script.text
+        assert "修正" in index.text
+        assert "修正を取消" in index.text
         assert "runCardReview" in script.text
+        assert "renderGeminiEvidence" in script.text
+        assert "Gemini 実行トレース（Function Calling）" in script.text
+        assert "Geminiが相談文を確認中" in script.text
         assert "誤実装サンプル" not in script.text
 
 
@@ -187,6 +249,58 @@ def test_heir_registration_adds_one_card_at_a_time() -> None:
     assert selected_body["state"]["home_acquirer_id"] == "second_son"
     assert selected_body["analysis"]["acquirer"]["id"] == "house_lost"
     assert selected_body["analysis"]["eligibility_alerts"][0]["impact_yen"] == 56000000
+
+
+def test_heir_edit_updates_relationship_and_selected_acquirer() -> None:
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        client.post(
+            "/api/heirs",
+            json={"relationship": "eldest_son", "co_resident": False},
+        )
+        response = client.patch(
+            "/api/heirs/eldest_son",
+            json={"relationship": "spouse", "co_resident": True},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"]["heirs"][0]["name"] == "配偶者"
+    assert body["state"]["heirs"][0]["relation"] == "spouse"
+    assert body["state"]["home_acquirer_id"] == "eldest_son"
+    assert body["analysis"]["acquirer"]["id"] == "spouse"
+    assert body["analysis"]["secondary_inheritance_alert"] is not None
+
+
+def test_delete_selected_heir_reselects_remaining_heir_and_recalculates() -> None:
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        client.post("/api/heirs", json={"relationship": "spouse", "co_resident": True})
+        client.post("/api/heirs", json={"relationship": "second_son", "co_resident": False})
+        client.patch("/api/case", json={"home_acquirer_id": "second_son"})
+        response = client.delete("/api/heirs/second_son")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [heir["id"] for heir in body["state"]["heirs"]] == ["spouse"]
+    assert body["state"]["home_acquirer_id"] == "spouse"
+    assert body["analysis"]["acquirer"]["id"] == "spouse"
+
+
+def test_delete_last_heir_returns_to_unregistered_state() -> None:
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        client.post("/api/heirs", json={"relationship": "eldest_son", "co_resident": True})
+        response = client.delete("/api/heirs/eldest_son")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"]["heirs"] == []
+    assert body["state"]["home_acquirer_id"] == ""
+    assert body["last_run"] is None
 
 
 def test_spouse_card_selection_surfaces_secondary_inheritance_alert() -> None:
@@ -287,6 +401,7 @@ def test_consultation_run_uses_gemini_function_calling_when_key_is_set(monkeypat
     assert calls[0]["model"] == "gemini-3.5-flash"
     assert calls[0]["tools"][0]["type"] == "function"
     assert calls[0]["tools"][0]["name"] == "select_taker_branch"
+    assert calls[0]["timeout"] == 10  # 実APIハング時に審査デモを固めない
     assert run["mode"] == "gemini_function_calling"
     assert run["gemini"]["used"] is True
     assert run["gemini"]["tool_name"] == "select_taker_branch"
@@ -724,6 +839,87 @@ def test_new_consultation_run_clears_manual_overall_opinion() -> None:
     body = response.json()
     assert body["case"]["manual_inputs"]["overall_opinion"] == ""
     assert body["case"]["analysis"]["draft"]["section_5_overall_opinion"] == ""
+
+
+def test_public_demo_state_is_isolated_between_browsers() -> None:
+    """公開デモの状態は訪問者ごとに分離し、審査員Aの相談・承認が審査員Bに漏れない。"""
+    with TestClient(app) as judge_a, TestClient(app) as judge_b:
+        judge_a.post("/api/demo/seed")
+        judge_b.post("/api/demo/seed")
+
+        judge_a.post(
+            "/api/run",
+            json={"text": "別居して賃貸暮らしの次男が自宅を相続する予定です。"},
+        )
+        judge_a.post("/api/approve")
+
+        a_case = judge_a.get("/api/case").json()
+        b_case = judge_b.get("/api/case").json()
+
+    # 審査員Aは house_lost 分岐＋承認済み。
+    assert a_case["analysis"]["acquirer"]["id"] == "house_lost"
+    assert a_case["approval"]["word_export_enabled"] is True
+    assert a_case["last_run"] is not None
+
+    # 審査員Bは触れていないので既定の同居親族・未承認・run無しのまま。
+    assert b_case["analysis"]["acquirer"]["id"] == "co_resident"
+    assert b_case["approval"]["word_export_enabled"] is False
+    assert b_case["last_run"] is None
+
+
+def test_missing_session_cookie_starts_fresh_and_never_leaks_prior_state() -> None:
+    """Cookieを持たない新規訪問者は、他人の承認状態を引き継がず初期状態から始まる。"""
+    with TestClient(app) as first:
+        first.post("/api/demo/seed")
+        first.post(
+            "/api/run",
+            json={"text": "別居して賃貸暮らしの次男が自宅を相続する予定です。"},
+        )
+        first.post("/api/approve")
+
+    # Cookieを共有しない新しいクライアント＝別の訪問者。
+    with TestClient(app) as newcomer:
+        case = newcomer.get("/api/case").json()
+
+    assert case["approval"]["word_export_enabled"] is False
+    assert case["last_run"] is None
+    assert case["analysis"]["acquirer"]["id"] == "co_resident"
+
+
+def test_session_cookie_is_secure_behind_https_proxy() -> None:
+    """Cloud Run等のHTTPSプロキシ越し（X-Forwarded-Proto: https）ではSecure付きCookieを発行する。"""
+    with TestClient(app) as client:
+        response = client.get("/api/case", headers={"X-Forwarded-Proto": "https"})
+        set_cookie = response.headers.get("set-cookie", "")
+
+    assert "souzoku_sid=" in set_cookie
+    assert "Secure" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=lax" in set_cookie
+
+
+def test_session_cookie_not_secure_on_plain_http_dev() -> None:
+    """localhost(HTTP)開発ではSecureを付けない（開発中にCookieが落ちないように）。"""
+    with TestClient(app) as client:
+        response = client.get("/api/case")
+        set_cookie = response.headers.get("set-cookie", "")
+
+    assert "souzoku_sid=" in set_cookie
+    assert "Secure" not in set_cookie
+
+
+def test_session_store_is_bounded_against_cookieless_flooding() -> None:
+    """公開URLでCookie無しリクエストが殺到しても、セッション数が上限で頭打ちになる。"""
+    from app.main import SessionStore
+
+    store = SessionStore()
+    store.MAX_SESSIONS = 5
+    created = [store.create()[0] for _ in range(50)]
+
+    assert len(store._sessions) <= store.MAX_SESSIONS
+    # 直近に作ったsidは生き残り、最古から追い出されている。
+    assert created[-1] in store._sessions
+    assert created[0] not in store._sessions
 
 
 def test_word_export_returns_valid_docx() -> None:

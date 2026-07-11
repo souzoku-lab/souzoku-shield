@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 公開前ゲート: 開発者の私的情報・秘密・社内実装マーカーの混入を止める
+      - name: Secret / private-marker scan
+        run: python scripts/verify_no_secrets.py
+
+      # 決定的税務コアの回帰テスト（Gemini APIキー無しで完走する）
+      - name: Run tests
+        run: pytest -q
+
+      # デプロイと同じ python:3.13-slim イメージがビルドできることを確認
+      - name: Docker build
+        run: docker build -t souzoku-shield:ci .
+
+      # コンテナとして起動し、公開デモの最小ヘルスチェックまで確認
+      - name: Docker health smoke
+        run: |
+          docker run -d --name souzoku-shield-ci -p 8080:8080 souzoku-shield:ci
+          for i in {1..20}; do
+            if curl -fsS http://127.0.0.1:8080/api/health; then
+              docker rm -f souzoku-shield-ci
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs souzoku-shield-ci
+          docker rm -f souzoku-shield-ci
+          exit 1

@@ -29,6 +29,7 @@ class CasePatch(BaseModel):
 
 
 class HeirPatch(BaseModel):
+    relationship: HeirRelationship | None = None
     name: str | None = Field(default=None, min_length=1, max_length=40)
     relation: HeirRelation | None = None
     co_resident: bool | None = None
@@ -68,6 +69,8 @@ class HealthResponse(BaseModel):
     storage: str
     llm_required: bool
     gemini_configured: bool
+    version: str
+    revision: str
 
 
 class IntakeRequest(BaseModel):
