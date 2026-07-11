@@ -11,3 +11,4 @@ build/
 exports/
 _docx_render/
 _reference_pdf/
+repro_titletaint.py

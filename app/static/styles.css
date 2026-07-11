@@ -1140,3 +1140,190 @@ h3 {
     justify-self: start;
   }
 }
+
+/* --- 最終24h改善: 公開デモ安全化・ブランド統一・Gemini実行証拠 --- */
+:root {
+  --rose: #b23a63;
+  --rose-bg: #fbeaf0;
+}
+
+.demo-warning {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border: 1px solid #e6b7c6;
+  border-left: 5px solid var(--rose);
+  border-radius: 8px;
+  background: var(--rose-bg);
+  color: #7a2444;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.demo-warning strong {
+  color: var(--rose);
+}
+
+.brand .tagline {
+  margin-top: 6px;
+  max-width: 62ch;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ghost-button.reset-demo {
+  border-color: var(--rose);
+  color: var(--rose);
+  background: var(--paper);
+  white-space: nowrap;
+}
+
+.ghost-button.reset-demo:hover,
+.ghost-button.reset-demo:focus-visible {
+  background: var(--rose-bg);
+}
+
+/* 主CTA（① AIエージェントを実行）を一番目立たせ、カード導線は副次に落とす */
+.run-input-row #runButton.primary-cta {
+  background: var(--navy);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.run-input-row #cardReviewButton.secondary-cta {
+  background: var(--paper);
+  color: var(--navy);
+  border: 1px solid var(--line);
+  font-weight: 700;
+}
+
+.run-input-row #cardReviewButton.secondary-cta:hover:not(:disabled),
+.run-input-row #cardReviewButton.secondary-cta:focus-visible {
+  background: var(--wash);
+}
+
+.run-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 14px 12px;
+  padding: 9px 12px;
+  border: 1px solid #9bc7b3;
+  border-radius: 8px;
+  color: #0f6b4b;
+  background: var(--mint);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.run-status::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #0f6b4b;
+  border-top-color: transparent;
+  animation: souzoku-spin 0.8s linear infinite;
+}
+
+.run-status[hidden] {
+  display: none;
+}
+
+@keyframes souzoku-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Gemini 実行証拠パネル（model / tool / result / latency / fallback） */
+.gemini-evidence {
+  margin: 12px 14px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--wash);
+}
+
+.gemini-evidence[hidden] {
+  display: none;
+}
+
+.gemini-evidence.live {
+  border-color: #9bc7b3;
+  background: var(--mint);
+}
+
+.gemini-evidence.fallback,
+.gemini-evidence.local {
+  border-color: #e5c485;
+  background: var(--amber-bg);
+}
+
+.gemini-evidence-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.gemini-evidence-head strong {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.gemini-badge {
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  color: #fff;
+}
+
+.gemini-badge.green {
+  background: var(--green);
+}
+
+.gemini-badge.amber {
+  background: var(--amber);
+}
+
+.gemini-evidence-rows {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.gemini-evidence-rows dt {
+  color: var(--muted);
+  font-weight: 700;
+  font-variant-ligatures: none;
+}
+
+.gemini-evidence-rows dd {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 700;
+  word-break: break-word;
+}
+
+.gemini-reason {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 承認後は Review ステップも完了表示にする（表示矛盾の解消） */
+.timeline-step.approved {
+  border-color: #9bc7b3;
+  background: var(--mint);
+}
+
+.review-completion-card.done {
+  border-color: #9bc7b3;
+  background: #d9f2e6;
+}

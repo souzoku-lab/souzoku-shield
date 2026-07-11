@@ -57,10 +57,17 @@ def test_static_ui_is_served() -> None:
         index = client.get("/")
         script = client.get("/static/app.js")
         assert index.status_code == 200
-        assert "小規模宅地 要件確認＆書面添付資料作成" in index.text
+        assert "Souzoku Shield — 相続の盾" in index.text
+        assert "公開用の架空デモです。" in index.text
+        assert "実名・住所・マイナンバー・実案件情報は入力しないでください" in index.text
+        assert "60秒デモを初期化" in index.text
+        assert "Runtime Eval（6件）" in index.text
+        assert "pytest視点" not in index.text
+        assert 'id="geminiEvidence"' in index.text
+        assert 'id="runStatus"' in index.text
         assert "Review作成" in index.text
         assert "カード内容でReview作成" in index.text
-        assert "相談文を実行" in index.text
+        assert "① AIエージェントを実行" in index.text
         assert "① カード登録・Review作成" in index.text
         assert "② レビュー完了（承認）" in index.text
         assert "③ 書面添付資料をWord出力" in index.text
@@ -109,6 +116,9 @@ def test_static_ui_is_served() -> None:
         assert "書面添付資料のdocxがダウンロード" in script.text
         assert "addHeir" in script.text
         assert "runCardReview" in script.text
+        assert "renderGeminiEvidence" in script.text
+        assert "Gemini 実行トレース（Function Calling）" in script.text
+        assert "Geminiが相談文を確認中" in script.text
         assert "誤実装サンプル" not in script.text
 
 
@@ -287,6 +297,7 @@ def test_consultation_run_uses_gemini_function_calling_when_key_is_set(monkeypat
     assert calls[0]["model"] == "gemini-3.5-flash"
     assert calls[0]["tools"][0]["type"] == "function"
     assert calls[0]["tools"][0]["name"] == "select_taker_branch"
+    assert calls[0]["timeout"] == 10  # 実APIハング時に審査デモを固めない
     assert run["mode"] == "gemini_function_calling"
     assert run["gemini"]["used"] is True
     assert run["gemini"]["tool_name"] == "select_taker_branch"
@@ -724,6 +735,87 @@ def test_new_consultation_run_clears_manual_overall_opinion() -> None:
     body = response.json()
     assert body["case"]["manual_inputs"]["overall_opinion"] == ""
     assert body["case"]["analysis"]["draft"]["section_5_overall_opinion"] == ""
+
+
+def test_public_demo_state_is_isolated_between_browsers() -> None:
+    """公開デモの状態は訪問者ごとに分離し、審査員Aの相談・承認が審査員Bに漏れない。"""
+    with TestClient(app) as judge_a, TestClient(app) as judge_b:
+        judge_a.post("/api/demo/seed")
+        judge_b.post("/api/demo/seed")
+
+        judge_a.post(
+            "/api/run",
+            json={"text": "別居して賃貸暮らしの次男が自宅を相続する予定です。"},
+        )
+        judge_a.post("/api/approve")
+
+        a_case = judge_a.get("/api/case").json()
+        b_case = judge_b.get("/api/case").json()
+
+    # 審査員Aは house_lost 分岐＋承認済み。
+    assert a_case["analysis"]["acquirer"]["id"] == "house_lost"
+    assert a_case["approval"]["word_export_enabled"] is True
+    assert a_case["last_run"] is not None
+
+    # 審査員Bは触れていないので既定の同居親族・未承認・run無しのまま。
+    assert b_case["analysis"]["acquirer"]["id"] == "co_resident"
+    assert b_case["approval"]["word_export_enabled"] is False
+    assert b_case["last_run"] is None
+
+
+def test_missing_session_cookie_starts_fresh_and_never_leaks_prior_state() -> None:
+    """Cookieを持たない新規訪問者は、他人の承認状態を引き継がず初期状態から始まる。"""
+    with TestClient(app) as first:
+        first.post("/api/demo/seed")
+        first.post(
+            "/api/run",
+            json={"text": "別居して賃貸暮らしの次男が自宅を相続する予定です。"},
+        )
+        first.post("/api/approve")
+
+    # Cookieを共有しない新しいクライアント＝別の訪問者。
+    with TestClient(app) as newcomer:
+        case = newcomer.get("/api/case").json()
+
+    assert case["approval"]["word_export_enabled"] is False
+    assert case["last_run"] is None
+    assert case["analysis"]["acquirer"]["id"] == "co_resident"
+
+
+def test_session_cookie_is_secure_behind_https_proxy() -> None:
+    """Cloud Run等のHTTPSプロキシ越し（X-Forwarded-Proto: https）ではSecure付きCookieを発行する。"""
+    with TestClient(app) as client:
+        response = client.get("/api/case", headers={"X-Forwarded-Proto": "https"})
+        set_cookie = response.headers.get("set-cookie", "")
+
+    assert "souzoku_sid=" in set_cookie
+    assert "Secure" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=lax" in set_cookie
+
+
+def test_session_cookie_not_secure_on_plain_http_dev() -> None:
+    """localhost(HTTP)開発ではSecureを付けない（開発中にCookieが落ちないように）。"""
+    with TestClient(app) as client:
+        response = client.get("/api/case")
+        set_cookie = response.headers.get("set-cookie", "")
+
+    assert "souzoku_sid=" in set_cookie
+    assert "Secure" not in set_cookie
+
+
+def test_session_store_is_bounded_against_cookieless_flooding() -> None:
+    """公開URLでCookie無しリクエストが殺到しても、セッション数が上限で頭打ちになる。"""
+    from app.main import SessionStore
+
+    store = SessionStore()
+    store.MAX_SESSIONS = 5
+    created = [store.create()[0] for _ in range(50)]
+
+    assert len(store._sessions) <= store.MAX_SESSIONS
+    # 直近に作ったsidは生き残り、最古から追い出されている。
+    assert created[-1] in store._sessions
+    assert created[0] not in store._sessions
 
 
 def test_word_export_returns_valid_docx() -> None:

@@ -22,11 +22,19 @@ def test_harness_current_engine_is_green() -> None:
     assert any(item["id"] == "spouse_secondary_inheritance_prompt" for item in result["results"])
 
 
-def test_harness_bad_fixture_is_red_with_damage_total() -> None:
+def test_harness_negative_fixture_is_red_with_damage_total() -> None:
     rules = load_rules()
     result = evaluate_bad_demo_fixture(rules, default_case_state())
 
     assert result["ok"] is False
     assert result["total_damage_yen"] == 112000000
-    assert any(not item["passed"] for item in result["results"])
+    failed = {item["id"] for item in result["results"] if not item["passed"]}
+    assert failed >= {
+        "spouse_no_continuation_requirement",
+        "co_resident_requires_continuation",
+        "house_lost_2018_conditions",
+        "draft_never_decides",
+        "overall_opinion_blank",
+    }
+    assert all(item["detail"].startswith("fault injection: ") for item in result["results"])
     assert all(item["damage_yen"] == 0 for item in result["results"] if not item["monetary"])

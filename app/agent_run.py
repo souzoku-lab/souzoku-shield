@@ -66,6 +66,8 @@ TOOL_DECLARATIONS: list[dict[str, Any]] = [
 
 GEMINI_ROUTER_MODEL = "gemini-3.5-flash"
 GEMINI_ROUTER_TOOL_NAME = "select_taker_branch"
+# 実APIがハングしても審査デモを固めない。超過したら例外→決定的リプレイへfallbackする。
+GEMINI_ROUTER_TIMEOUT_SECONDS = 10
 
 
 STATUS_RANK = {
@@ -181,6 +183,7 @@ def _route_consultation_with_gemini(
             model=GEMINI_ROUTER_MODEL,
             input=_gemini_router_prompt(text, rules),
             tools=_gemini_router_tools(),
+            timeout=GEMINI_ROUTER_TIMEOUT_SECONDS,
         )
         function_call = _first_function_call(interaction)
         if not function_call:

@@ -36,7 +36,8 @@ function render(payload) {
   renderCase(analysis);
   renderControls(payload.state, rules_summary, analysis);
   renderApproval(approval, payload.state);
-  renderRun(last_run);
+  renderRun(last_run, approval);
+  renderGeminiEvidence(last_run);
   renderMetrics(analysis, harness);
   renderKanban(analysis, rules_summary);
   renderDraft(analysis, payload.manual_inputs || {});
@@ -96,7 +97,7 @@ function renderApproval(approval, state) {
         : "相続人カードを登録すると、相談文なしでもReview作成できます。";
 }
 
-function renderRun(run) {
+function renderRun(run, approval) {
   const timeline = qs("#runTimeline");
   const mode = qs("#runMode");
   timeline.innerHTML = "";
@@ -104,12 +105,75 @@ function renderRun(run) {
     mode.textContent = "決定的リプレイ";
     const empty = document.createElement("div");
     empty.className = "timeline-step";
-    empty.innerHTML = "<strong>待機中</strong><p>相続人カードからReview作成、または相談文を実行するとACTIONタイムラインを表示します。</p>";
+    empty.innerHTML = "<strong>待機中</strong><p>「① AIエージェントを実行」、またはカード内容でReview作成するとACTIONタイムラインを表示します。</p>";
     timeline.appendChild(empty);
     return;
   }
   mode.textContent = runModeLabel(run);
-  run.steps.forEach((step) => timeline.appendChild(timelineStep(step)));
+  const approved = Boolean(approval && approval.word_export_enabled);
+  run.steps.forEach((step) => timeline.appendChild(timelineStep(step, approved)));
+}
+
+function renderGeminiEvidence(run) {
+  const box = qs("#geminiEvidence");
+  box.innerHTML = "";
+  if (!run || !run.gemini) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const g = run.gemini;
+  const used = Boolean(g.used);
+  box.className = `gemini-evidence ${used ? "live" : g.configured ? "fallback" : "local"}`;
+
+  const head = document.createElement("div");
+  head.className = "gemini-evidence-head";
+  const label = document.createElement("strong");
+  label.textContent = used
+    ? "Gemini 実行トレース（Function Calling）"
+    : g.configured
+      ? "Gemini fallback（決定的コアで継続）"
+      : "Gemini 未接続（決定的リプレイ）";
+  const badge = document.createElement("span");
+  badge.className = `gemini-badge ${used ? "green" : "amber"}`;
+  badge.textContent = used ? "実接続" : "fallback";
+  head.append(label, badge);
+  box.appendChild(head);
+
+  const acquirer = g.arguments && g.arguments.acquirer_type ? g.arguments.acquirer_type : "—";
+  const rows = document.createElement("dl");
+  rows.className = "gemini-evidence-rows";
+  const entries = [
+    ["model", g.model || "—"],
+    ["tool", used ? g.tool_name || "—" : "—"],
+    ["result", used ? acquirer : "—"],
+    ["latency", `${Number(g.latency_ms || 0)}ms`],
+    ["fallback", used ? "なし" : fallbackLabel(g.fallback_reason) || "—"],
+  ];
+  entries.forEach(([key, value]) => {
+    const dt = document.createElement("dt");
+    dt.textContent = key;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    rows.append(dt, dd);
+  });
+  box.appendChild(rows);
+
+  if (used && g.arguments && g.arguments.reason) {
+    const reason = document.createElement("p");
+    reason.className = "gemini-reason";
+    reason.textContent = `理由: ${g.arguments.reason}`;
+    box.appendChild(reason);
+  }
+}
+
+function fallbackLabel(reason) {
+  const map = {
+    gemini_api_key_not_set: "APIキー未設定（決定的リプレイ）",
+    gemini_no_function_call: "function call無し→決定的コアで継続",
+    gemini_invalid_tool_call: "無効なtool呼び出し→決定的コアで継続",
+  };
+  return map[reason] || (reason ? `${reason}→決定的コアで継続` : "");
 }
 
 function runModeLabel(run) {
@@ -122,18 +186,24 @@ function runModeLabel(run) {
   return "決定的リプレイ";
 }
 
-function timelineStep(step) {
+function timelineStep(step, approved) {
+  const isReview = step.id === "review";
+  const reviewDone = isReview && Boolean(approved);
+  const pending = step.status === "PENDING_APPROVAL" && !reviewDone;
+
   const item = document.createElement("article");
-  item.className = `timeline-step ${step.status === "PENDING_APPROVAL" ? "pending" : ""}`;
+  item.className = `timeline-step ${pending ? "pending" : ""} ${reviewDone ? "approved" : ""}`.trim();
   const title = document.createElement("strong");
   title.textContent = step.label;
   const badge = document.createElement("span");
-  badge.className = `badge ${step.status === "PENDING_APPROVAL" ? "red" : "green"}`;
-  badge.textContent = step.status === "PENDING_APPROVAL" ? "レビュー完了待ち" : "DONE";
+  badge.className = `badge ${pending ? "red" : "green"}`;
+  badge.textContent = pending ? "レビュー完了待ち" : reviewDone ? "レビュー完了" : "DONE";
   title.appendChild(badge);
 
   const summary = document.createElement("p");
-  summary.textContent = step.summary;
+  summary.textContent = reviewDone
+    ? "税理士がレビュー完了（承認）しました。書面添付資料をWord出力できます。"
+    : step.summary;
   const actions = document.createElement("ul");
   step.actions.slice(0, 4).forEach((action) => {
     const li = document.createElement("li");
@@ -149,18 +219,20 @@ function timelineStep(step) {
     item.appendChild(secondaryPromptCard(secondaryPrompt));
   }
   if (approvalAction) {
-    item.appendChild(reviewCompletionCard(approvalAction));
+    item.appendChild(reviewCompletionCard(approvalAction, reviewDone));
   }
   return item;
 }
 
-function reviewCompletionCard(action) {
+function reviewCompletionCard(action, done) {
   const card = document.createElement("div");
-  card.className = "review-completion-card";
+  card.className = `review-completion-card ${done ? "done" : ""}`.trim();
   const title = document.createElement("strong");
-  title.textContent = "レビュー完了にする操作";
+  title.textContent = done ? "レビュー完了（承認済み）" : "レビュー完了にする操作";
   const message = document.createElement("p");
-  message.textContent = action.reason;
+  message.textContent = done
+    ? "税理士が承認しました。承認後だけ書面添付資料をWord出力できます。"
+    : action.reason;
   card.append(title, message);
   return card;
 }
@@ -430,25 +502,54 @@ async function saveOverallOpinion(value) {
   render(currentPayload);
 }
 
+let isRunning = false;
+
+function setRunning(running) {
+  isRunning = running;
+  const status = qs("#runStatus");
+  qs("#runButton").disabled = running;
+  qs("#cardReviewButton").disabled = running || qs("#cardReviewButton").disabled;
+  if (running) {
+    status.hidden = false;
+    status.textContent = "Geminiが相談文を確認中…（エージェント実行中）";
+  } else {
+    status.hidden = true;
+    status.textContent = "";
+    qs("#runButton").disabled = false;
+  }
+}
+
 async function runConsultation() {
+  if (isRunning) return;
   const text = qs("#consultationText").value.trim();
   if (!text) {
     setRunError("相談文は8文字以上で入力してください。");
     return;
   }
   setRunError("");
-  const result = await api("/api/run", { method: "POST", body: JSON.stringify({ text }) });
-  currentPayload = result.case;
-  render(currentPayload);
-  setRunError("");
+  setRunning(true);
+  try {
+    const result = await api("/api/run", { method: "POST", body: JSON.stringify({ text }) });
+    currentPayload = result.case;
+    render(currentPayload);
+    setRunError("");
+  } finally {
+    setRunning(false);
+  }
 }
 
 async function runCardReview() {
+  if (isRunning) return;
   setRunError("");
-  const result = await api("/api/review/from-cards", { method: "POST" });
-  currentPayload = result.case;
-  render(currentPayload);
-  setRunError("");
+  setRunning(true);
+  try {
+    const result = await api("/api/review/from-cards", { method: "POST" });
+    currentPayload = result.case;
+    render(currentPayload);
+    setRunError("");
+  } finally {
+    setRunning(false);
+  }
 }
 
 async function approveWord() {

@@ -3,18 +3,24 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>小規模宅地 要件確認＆書面添付資料作成</title>
+    <title>Souzoku Shield — 相続の盾｜小規模宅地×書面添付 AIエージェント</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <main class="shell">
+      <div class="demo-warning" role="alert">
+        <strong>公開用の架空デモです。</strong>
+        実名・住所・マイナンバー・実案件情報は入力しないでください。相談文はGemini APIへ送信されます。
+      </div>
+
       <header class="topbar">
-        <div>
-          <p class="eyebrow">Findy DevOps x AI Agent Hackathon / M1</p>
-          <h1>小規模宅地 要件確認＆書面添付資料作成</h1>
+        <div class="brand">
+          <p class="eyebrow">Findy DevOps × AI Agent Hackathon / M1</p>
+          <h1>Souzoku Shield — 相続の盾</h1>
+          <p class="tagline">Geminiが取得者ルートを選び、決定的税務コアが不足資料・リスク・書面添付ドラフトを組み立てる。</p>
         </div>
         <div class="topbar-actions">
-          <button class="icon-button" id="seedButton" title="デモ状態に戻す" aria-label="デモ状態に戻す">↺</button>
+          <button class="ghost-button reset-demo" id="seedButton" type="button" title="デモを初期状態に戻す">60秒デモを初期化</button>
           <div class="action-stack">
             <button class="ghost-button primary" id="approveButton" type="button">承認</button>
             <small id="approvalHint">相談文を実行すると承認できます</small>
@@ -23,7 +29,7 @@
             <a class="ghost-link primary word-export-link disabled" id="wordLink" href="/api/export/word" aria-disabled="true">書面添付資料出力（Word）</a>
             <small id="wordHint">承認するとWord出力できます</small>
           </div>
-          <a class="ghost-link" href="/api/harness" target="_blank" rel="noreferrer">pytest視点</a>
+          <a class="ghost-link" href="/api/harness" target="_blank" rel="noreferrer">Runtime Eval（6件）</a>
         </div>
       </header>
 
@@ -74,24 +80,26 @@
         <div class="panel-head">
           <div>
             <h2>Review作成</h2>
-            <p>相続人カードだけでも、相談文ありでも、Intake → Router → Evidence → Draft → Review のACTIONを起動します。</p>
-            <p class="run-start-hint">カードが正しければ「カード内容でReview作成」、相談文がある場合は「相談文を実行」。</p>
+            <p>相談文でも、相続人カードだけでも、Intake → Router → Evidence → Draft → Review のACTIONを起動します。</p>
+            <p class="run-start-hint">まずは「① AIエージェントを実行」。カードだけで進める場合は「カード内容でReview作成」。</p>
           </div>
           <span id="runMode">決定的リプレイ</span>
         </div>
+        <div id="geminiEvidence" class="gemini-evidence" aria-live="polite"></div>
         <div class="run-input-row">
-          <textarea id="consultationText" rows="3">父が亡くなり、長男が同居して自宅を相続予定です。登記が祖父名義かもしれません。</textarea>
+          <textarea id="consultationText" rows="3">父が亡くなり、母と長男は同居していました。持ち家のない別居の次男が、自宅を相続する予定です。次男は賃貸住宅に住んでいます。</textarea>
           <div class="run-button-stack">
-            <button id="cardReviewButton" type="button">カード内容でReview作成</button>
-            <button id="runButton" type="button">相談文を実行</button>
+            <button id="runButton" class="primary-cta" type="button">① AIエージェントを実行</button>
+            <button id="cardReviewButton" class="secondary-cta" type="button">カード内容でReview作成</button>
           </div>
         </div>
+        <p id="runStatus" class="run-status" role="status" hidden></p>
         <div class="run-error" id="runError" role="alert" hidden></div>
         <div class="word-flow-panel" aria-label="Word出力操作">
           <div class="word-flow-status">
             <span>次の操作</span>
             <strong id="wordFlowStatus">カード登録・Review作成</strong>
-            <p id="wordFlowHint">カード内容でReview作成、または相談文を実行すると、レビュー完了ボタンが押せます。</p>
+            <p id="wordFlowHint">「① AIエージェントを実行」またはカード内容でReview作成すると、レビュー完了ボタンが押せます。</p>
           </div>
           <div class="word-flow-actions">
             <button class="ghost-button primary" id="inlineApproveButton" type="button">② レビュー完了（承認）</button>

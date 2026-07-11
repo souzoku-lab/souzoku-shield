@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import copy
 import os
+import secrets
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -37,18 +40,103 @@ from .rules_loader import default_case_state, load_rules
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 
-app = FastAPI(title="Souzoku Attachment Agent M1", version="0.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 公開デモは同一Originのフロントエンドからしか呼ばれないため、CORSは開放しない。
+# 状態は訪問者ごとにCookieセッションで完全分離する（レポート §9 のフル分離）。
+app = FastAPI(title="Souzoku Shield — 相続の盾 (M1)", version="0.1.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-_STATE: dict[str, Any] = default_case_state()
-_LAST_RUN: dict[str, Any] | None = None
-_WORD_EXPORT_APPROVED = False
+SESSION_COOKIE = "souzoku_sid"
+SESSION_TTL_SECONDS = 30 * 60  # 30分。審査員が離席してもデモが混ざらないよう自然失効させる。
+
+
+@dataclass
+class DemoSession:
+    """訪問者1人ぶんの案件状態。プロセス共有をやめ、審査員ごとに隔離する。"""
+
+    state: dict[str, Any] = field(default_factory=default_case_state)
+    last_run: dict[str, Any] | None = None
+    word_export_approved: bool = False
+    touched_at: float = field(default_factory=time.time)
+
+
+class SessionStore:
+    """Cookie(session id)でDemoSessionを引くメモリストア。永続化はしない。"""
+
+    # 公開URLはCookie無しリクエスト（bot/クローラ）でもセッションを生む。TTL到達前に
+    # 無制限に積み上がってOOMしないよう、上限を設けて最古から追い出す（可用性ガード）。
+    MAX_SESSIONS = 5000
+
+    def __init__(self) -> None:
+        self._sessions: dict[str, DemoSession] = {}
+        self._lock = Lock()
+
+    def _sweep(self, now: float) -> None:
+        expired = [sid for sid, s in self._sessions.items() if now - s.touched_at > SESSION_TTL_SECONDS]
+        for sid in expired:
+            self._sessions.pop(sid, None)
+
+    def _evict_oldest_if_full(self) -> None:
+        overflow = len(self._sessions) - self.MAX_SESSIONS + 1
+        if overflow <= 0:
+            return
+        oldest = sorted(self._sessions.items(), key=lambda item: item[1].touched_at)
+        for sid, _ in oldest[:overflow]:
+            self._sessions.pop(sid, None)
+
+    def get(self, sid: str | None) -> DemoSession | None:
+        if not sid:
+            return None
+        now = time.time()
+        with self._lock:
+            session = self._sessions.get(sid)
+            if session is None:
+                return None
+            if now - session.touched_at > SESSION_TTL_SECONDS:
+                self._sessions.pop(sid, None)
+                return None
+            session.touched_at = now
+            return session
+
+    def create(self) -> tuple[str, DemoSession]:
+        now = time.time()
+        sid = secrets.token_urlsafe(24)
+        with self._lock:
+            self._sweep(now)
+            self._evict_oldest_if_full()
+            session = DemoSession(touched_at=now)
+            self._sessions[sid] = session
+        return sid, session
+
+
+_STORE = SessionStore()
+
+
+def _request_is_https(request: Request) -> bool:
+    """Cloud Run等のリバースプロキシ越しでも元スキームを判定する。"""
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip().lower() == "https"
+    return request.url.scheme == "https"
+
+
+def get_session(request: Request, response: Response) -> DemoSession:
+    """訪問者のCookieからセッションを引く。無ければ新規作成しCookieを発行する。"""
+    sid = request.cookies.get(SESSION_COOKIE)
+    session = _STORE.get(sid)
+    if session is None:
+        sid, session = _STORE.create()
+        response.set_cookie(
+            key=SESSION_COOKIE,
+            value=sid,
+            max_age=SESSION_TTL_SECONDS,
+            httponly=True,
+            samesite="lax",
+            # 公開デモ(HTTPS)ではsecure付与、localhost(HTTP)開発では無効。
+            # Cloud Runはproxy越しにHTTPで届くため、元スキームは X-Forwarded-Proto を見る。
+            secure=_request_is_https(request),
+        )
+    return session
+
 
 HEIR_RELATIONSHIP_PROFILES = {
     "spouse": {"id": "spouse", "name": "配偶者", "relation": "spouse"},
@@ -78,120 +166,105 @@ def health() -> dict[str, Any]:
 
 
 @app.post("/api/demo/seed")
-def seed_demo() -> dict[str, Any]:
-    global _STATE, _LAST_RUN
-    _STATE = default_case_state()
-    _LAST_RUN = None
-    _reset_approval()
-    return {"ok": True, "state": copy.deepcopy(_STATE), "case": get_case()}
+def seed_demo(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
+    session.state = default_case_state()
+    session.last_run = None
+    _reset_approval(session)
+    return {"ok": True, "state": copy.deepcopy(session.state), "case": _case_payload(session)}
 
 
 @app.post("/api/demo/clear-heirs")
-def clear_demo_heirs() -> dict[str, Any]:
+def clear_demo_heirs(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     """自然文から相続人カードを起票するデモ用の未登録状態に戻す。"""
-    global _LAST_RUN
-    _STATE["heirs"] = []
-    _STATE["home_acquirer_id"] = ""
-    _STATE["acquirer_type"] = load_rules()["expert"]["demo_case"]["default_acquirer_type"]
-    _LAST_RUN = None
-    _reset_approval()
-    return {"ok": True, "case": get_case()}
+    session.state["heirs"] = []
+    session.state["home_acquirer_id"] = ""
+    session.state["acquirer_type"] = load_rules()["expert"]["demo_case"]["default_acquirer_type"]
+    session.last_run = None
+    _reset_approval(session)
+    return {"ok": True, "case": _case_payload(session)}
 
 
 @app.get("/api/case")
-def get_case() -> dict[str, Any]:
-    rules = load_rules()
-    state = copy.deepcopy(_STATE)
-    reduced = reduce_case(state, rules)
-    return {
-        "state": state,
-        "manual_inputs": _manual_inputs_payload(state),
-        "rules_summary": _rules_summary(rules),
-        "analysis": reduced,
-        "counterfactuals": build_counterfactuals(state, rules),
-        "harness": evaluate_suite(rules, state),
-        "bad_demo_fixture": evaluate_bad_demo_fixture(rules, state),
-        "last_run": copy.deepcopy(_LAST_RUN),
-        "approval": _approval_payload(),
-    }
+def get_case(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
+    return _case_payload(session)
 
 
 @app.patch("/api/case")
-def patch_case(payload: CasePatch) -> dict[str, Any]:
+def patch_case(payload: CasePatch, session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     if payload.acquirer_type is not None:
-        _STATE["acquirer_type"] = payload.acquirer_type
-        selected_id = select_home_acquirer_id_for_type(_STATE, payload.acquirer_type)
+        session.state["acquirer_type"] = payload.acquirer_type
+        selected_id = select_home_acquirer_id_for_type(session.state, payload.acquirer_type)
         if selected_id:
-            _STATE["home_acquirer_id"] = selected_id
+            session.state["home_acquirer_id"] = selected_id
     if payload.home_acquirer_id is not None:
-        _set_home_acquirer(payload.home_acquirer_id)
+        _set_home_acquirer(session, payload.home_acquirer_id)
     if payload.partition_status is not None:
-        _STATE["partition_status"] = payload.partition_status
-    _reset_review_state(clear_run=True)
-    return get_case()
+        session.state["partition_status"] = payload.partition_status
+    _reset_review_state(session, clear_run=True)
+    return _case_payload(session)
 
 
 @app.post("/api/intake")
-def create_intake(payload: IntakeRequest) -> dict[str, Any]:
+def create_intake(payload: IntakeRequest, session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     """案件1枚投入のM1導線。保存はdemo memoryのみ。"""
-    _STATE["case_title"] = payload.title
-    _STATE["acquirer_type"] = payload.acquirer_type
-    selected_id = select_home_acquirer_id_for_type(_STATE, payload.acquirer_type)
+    session.state["case_title"] = payload.title
+    session.state["acquirer_type"] = payload.acquirer_type
+    selected_id = select_home_acquirer_id_for_type(session.state, payload.acquirer_type)
     if selected_id:
-        _STATE["home_acquirer_id"] = selected_id
-    _STATE["partition_status"] = payload.partition_status
-    _reset_review_state(clear_run=True)
-    return get_case()
+        session.state["home_acquirer_id"] = selected_id
+    session.state["partition_status"] = payload.partition_status
+    _reset_review_state(session, clear_run=True)
+    return _case_payload(session)
 
 
 @app.post("/api/run")
-def run_agent(payload: ConsultationRunRequest) -> dict[str, Any]:
+def run_agent(payload: ConsultationRunRequest, session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     """相談文からACTIONタイムラインを起動する。応答文は返さず状態を更新する。"""
-    global _STATE, _LAST_RUN
     rules = load_rules()
     next_state, run = build_agent_run(
         consultation_text=payload.text,
-        state=copy.deepcopy(_STATE),
+        state=copy.deepcopy(session.state),
         rules=rules,
         gemini_configured=bool(os.getenv("GEMINI_API_KEY")),
     )
-    _STATE = next_state
-    _STATE["manual_inputs"] = _default_manual_inputs()
-    _LAST_RUN = run
-    _reset_approval()
-    return {"ok": True, "run": copy.deepcopy(run), "case": get_case()}
+    session.state = next_state
+    session.state["manual_inputs"] = _default_manual_inputs()
+    session.last_run = run
+    _reset_approval(session)
+    return {"ok": True, "run": copy.deepcopy(run), "case": _case_payload(session)}
 
 
 @app.post("/api/review/from-cards")
-def run_review_from_cards() -> dict[str, Any]:
+def run_review_from_cards(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     """相談文なしで、登録済み相続人カードからReview到達状態を作る。"""
-    global _STATE, _LAST_RUN
-    _ensure_card_review_inputs()
+    _ensure_card_review_inputs(session)
     rules = load_rules()
     next_state, run = build_card_review_run(
-        state=copy.deepcopy(_STATE),
+        state=copy.deepcopy(session.state),
         rules=rules,
         gemini_configured=bool(os.getenv("GEMINI_API_KEY")),
     )
-    _STATE = next_state
-    _STATE["manual_inputs"] = _default_manual_inputs()
-    _LAST_RUN = run
-    _reset_approval()
-    return {"ok": True, "run": copy.deepcopy(run), "case": get_case()}
+    session.state = next_state
+    session.state["manual_inputs"] = _default_manual_inputs()
+    session.last_run = run
+    _reset_approval(session)
+    return {"ok": True, "run": copy.deepcopy(run), "case": _case_payload(session)}
 
 
 @app.patch("/api/documents/{document_id}")
-def patch_document(document_id: str, payload: DocumentPatch) -> dict[str, Any]:
-    if document_id not in _STATE["documents"]:
+def patch_document(
+    document_id: str, payload: DocumentPatch, session: DemoSession = Depends(get_session)
+) -> dict[str, Any]:
+    if document_id not in session.state["documents"]:
         raise HTTPException(status_code=404, detail="document_not_found")
-    _STATE["documents"][document_id] = payload.status
-    _reset_review_state(clear_run=True)
-    return get_case()
+    session.state["documents"][document_id] = payload.status
+    _reset_review_state(session, clear_run=True)
+    return _case_payload(session)
 
 
 @app.patch("/api/heirs/{heir_id}")
-def patch_heir(heir_id: str, payload: HeirPatch) -> dict[str, Any]:
-    heirs = _ensure_heirs(_STATE)
+def patch_heir(heir_id: str, payload: HeirPatch, session: DemoSession = Depends(get_session)) -> dict[str, Any]:
+    heirs = _ensure_heirs(session.state)
     heir = next((item for item in heirs if item["id"] == heir_id), None)
     if heir is None:
         raise HTTPException(status_code=404, detail="heir_not_found")
@@ -201,15 +274,15 @@ def patch_heir(heir_id: str, payload: HeirPatch) -> dict[str, Any]:
         heir["relation"] = payload.relation
     if payload.co_resident is not None:
         heir["co_resident"] = payload.co_resident
-    if _STATE.get("home_acquirer_id") == heir_id:
-        _STATE["acquirer_type"] = acquirer_type_for_heir(heir)
-    _reset_review_state(clear_run=True)
-    return get_case()
+    if session.state.get("home_acquirer_id") == heir_id:
+        session.state["acquirer_type"] = acquirer_type_for_heir(heir)
+    _reset_review_state(session, clear_run=True)
+    return _case_payload(session)
 
 
 @app.post("/api/heirs")
-def create_heir(payload: HeirCreateRequest) -> dict[str, Any]:
-    heirs = _ensure_heirs(_STATE)
+def create_heir(payload: HeirCreateRequest, session: DemoSession = Depends(get_session)) -> dict[str, Any]:
+    heirs = _ensure_heirs(session.state)
     profile = HEIR_RELATIONSHIP_PROFILES[payload.relationship]
     new_heir = {
         "id": _next_heir_id(profile["id"], heirs),
@@ -218,33 +291,35 @@ def create_heir(payload: HeirCreateRequest) -> dict[str, Any]:
         "co_resident": payload.co_resident,
     }
     heirs.append(new_heir)
-    _STATE["heirs"] = heirs
-    if not _STATE.get("home_acquirer_id"):
-        _STATE["home_acquirer_id"] = new_heir["id"]
-        _STATE["acquirer_type"] = acquirer_type_for_heir(new_heir)
-    _reset_review_state(clear_run=True)
-    return get_case()
+    session.state["heirs"] = heirs
+    if not session.state.get("home_acquirer_id"):
+        session.state["home_acquirer_id"] = new_heir["id"]
+        session.state["acquirer_type"] = acquirer_type_for_heir(new_heir)
+    _reset_review_state(session, clear_run=True)
+    return _case_payload(session)
 
 
 @app.patch("/api/manual/overall-opinion")
-def patch_overall_opinion(payload: ManualOpinionPatch) -> dict[str, Any]:
+def patch_overall_opinion(
+    payload: ManualOpinionPatch, session: DemoSession = Depends(get_session)
+) -> dict[str, Any]:
     """税理士が画面上で手入力した総合所見を保存する。AIはこの欄を生成しない。"""
-    manual_inputs = _ensure_manual_inputs(_STATE)
+    manual_inputs = _ensure_manual_inputs(session.state)
     manual_inputs["overall_opinion"] = payload.overall_opinion
-    _reset_approval()
-    return get_case()
+    _reset_approval(session)
+    return _case_payload(session)
 
 
 @app.get("/api/counterfactuals")
-def counterfactuals() -> dict[str, Any]:
+def counterfactuals(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     rules = load_rules()
-    return {"branches": build_counterfactuals(copy.deepcopy(_STATE), rules)}
+    return {"branches": build_counterfactuals(copy.deepcopy(session.state), rules)}
 
 
 @app.get("/api/harness")
-def harness() -> dict[str, Any]:
+def harness(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     rules = load_rules()
-    state = copy.deepcopy(_STATE)
+    state = copy.deepcopy(session.state)
     return {
         "current": evaluate_suite(rules, state),
         "bad_demo_fixture": evaluate_bad_demo_fixture(rules, state),
@@ -252,21 +327,20 @@ def harness() -> dict[str, Any]:
 
 
 @app.post("/api/approve")
-def approve_word_export() -> dict[str, Any]:
+def approve_word_export(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     """Review終端のHITL承認。承認後だけWord出力を許可する。"""
-    global _WORD_EXPORT_APPROVED
-    if not _review_ready():
+    if not _review_ready(session):
         raise HTTPException(status_code=409, detail="review_not_ready")
-    _WORD_EXPORT_APPROVED = True
-    return {"ok": True, "approval": _approval_payload(), "export_url": "/api/export/word"}
+    session.word_export_approved = True
+    return {"ok": True, "approval": _approval_payload(session), "export_url": "/api/export/word"}
 
 
 @app.get("/api/export/word")
-def export_word() -> StreamingResponse:
-    if not (_WORD_EXPORT_APPROVED and _review_ready()):
+def export_word(session: DemoSession = Depends(get_session)) -> StreamingResponse:
+    if not (session.word_export_approved and _review_ready(session)):
         raise HTTPException(status_code=409, detail="approval_required")
     rules = load_rules()
-    state = copy.deepcopy(_STATE)
+    state = copy.deepcopy(session.state)
     analysis = reduce_case(state, rules)
     analysis["manual_inputs"] = _manual_inputs_payload(state)
     harness_result = evaluate_suite(rules, state)
@@ -278,6 +352,23 @@ def export_word() -> StreamingResponse:
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers=headers,
     )
+
+
+def _case_payload(session: DemoSession) -> dict[str, Any]:
+    rules = load_rules()
+    state = copy.deepcopy(session.state)
+    reduced = reduce_case(state, rules)
+    return {
+        "state": state,
+        "manual_inputs": _manual_inputs_payload(state),
+        "rules_summary": _rules_summary(rules),
+        "analysis": reduced,
+        "counterfactuals": build_counterfactuals(state, rules),
+        "harness": evaluate_suite(rules, state),
+        "bad_demo_fixture": evaluate_bad_demo_fixture(rules, state),
+        "last_run": copy.deepcopy(session.last_run),
+        "approval": _approval_payload(session),
+    }
 
 
 def _rules_summary(rules: dict[str, Any]) -> dict[str, Any]:
@@ -295,16 +386,14 @@ def _rules_summary(rules: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _reset_approval() -> None:
-    global _WORD_EXPORT_APPROVED
-    _WORD_EXPORT_APPROVED = False
+def _reset_approval(session: DemoSession) -> None:
+    session.word_export_approved = False
 
 
-def _reset_review_state(*, clear_run: bool = False) -> None:
-    global _LAST_RUN
-    _reset_approval()
+def _reset_review_state(session: DemoSession, *, clear_run: bool = False) -> None:
+    _reset_approval(session)
     if clear_run:
-        _LAST_RUN = None
+        session.last_run = None
 
 
 def _default_manual_inputs() -> dict[str, str]:
@@ -319,21 +408,21 @@ def _ensure_heirs(state: dict[str, Any]) -> list[dict[str, Any]]:
     return heirs
 
 
-def _ensure_card_review_inputs() -> None:
-    heirs = _ensure_heirs(_STATE)
+def _ensure_card_review_inputs(session: DemoSession) -> None:
+    heirs = _ensure_heirs(session.state)
     if not heirs:
         raise HTTPException(status_code=409, detail="heirs_required_for_review")
-    if not _STATE.get("home_acquirer_id"):
+    if not session.state.get("home_acquirer_id"):
         raise HTTPException(status_code=409, detail="home_acquirer_required_for_review")
 
 
-def _set_home_acquirer(heir_id: str) -> None:
-    heirs = _ensure_heirs(_STATE)
+def _set_home_acquirer(session: DemoSession, heir_id: str) -> None:
+    heirs = _ensure_heirs(session.state)
     heir = next((item for item in heirs if item["id"] == heir_id), None)
     if heir is None:
         raise HTTPException(status_code=404, detail="heir_not_found")
-    _STATE["home_acquirer_id"] = heir_id
-    _STATE["acquirer_type"] = acquirer_type_for_heir(heir)
+    session.state["home_acquirer_id"] = heir_id
+    session.state["acquirer_type"] = acquirer_type_for_heir(heir)
 
 
 def _next_heir_id(base_id: str, heirs: list[dict[str, Any]]) -> str:
@@ -360,19 +449,20 @@ def _manual_inputs_payload(state: dict[str, Any]) -> dict[str, str]:
     return {"overall_opinion": str(manual.get("overall_opinion", ""))}
 
 
-def _review_ready() -> bool:
-    if not _LAST_RUN:
+def _review_ready(session: DemoSession) -> bool:
+    if not session.last_run:
         return False
     return any(
         step.get("id") == "review" and step.get("status") == "PENDING_APPROVAL"
-        for step in _LAST_RUN.get("steps", [])
+        for step in session.last_run.get("steps", [])
     )
 
 
-def _approval_payload() -> dict[str, Any]:
-    ready = _review_ready()
+def _approval_payload(session: DemoSession) -> dict[str, Any]:
+    ready = _review_ready(session)
+    approved = session.word_export_approved
     return {
-        "status": "APPROVED" if _WORD_EXPORT_APPROVED else ("PENDING_APPROVAL" if ready else "NEEDS_REVIEW"),
+        "status": "APPROVED" if approved else ("PENDING_APPROVAL" if ready else "NEEDS_REVIEW"),
         "review_ready": ready,
-        "word_export_enabled": _WORD_EXPORT_APPROVED and ready,
+        "word_export_enabled": approved and ready,
     }
