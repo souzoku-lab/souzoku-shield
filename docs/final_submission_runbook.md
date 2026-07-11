@@ -21,7 +21,7 @@ git ls-files
 
 - working treeがクリーン。
 - secret scanがOK。
-- pytest 59件が成功。
+- pytest 72件が成功。
 - Docker buildが成功し、コンテナの`/api/health`が`ok=true`を返す。
 - `.env`、ログ、検証一時ファイル、APIキーがgit管理対象に含まれない。
 - `google-genai==2.10.0`で再現性を固定する。
@@ -71,6 +71,29 @@ deploy前に報告する項目:
 
 コマンドでは必ず`--project`を明示し、`APP_VERSION=<公開main SHA>`を設定する。失敗時は旧revisionへ戻せる状態を維持する。
 
+公開M1の案件状態はプロセス内メモリに置くため、審査期間は**単一インスタンス + セッションアフィニティ**をデプロイ条件にする。これで同じ審査員の「問い返し→回答→再開」が別インスタンスへ移る経路を閉じる。`--max-instances=1`は可用性よりデモの継続性を優先する暫定設定であり、再起動時の状態消失までは防げない。
+
+```powershell
+gcloud run deploy souzoku-agent `
+  --source . `
+  --project <PROJECT_ID> `
+  --region asia-northeast1 `
+  --allow-unauthenticated `
+  --max-instances 1 `
+  --concurrency 20 `
+  --session-affinity `
+  --update-env-vars APP_VERSION=<公開mainの40文字SHA>
+```
+
+デプロイ後は設定を読み戻し、`maxScale=1`、session affinity有効、traffic 100%のrevision、`/api/health`の40文字SHAが一致することを確認する。
+
+```powershell
+gcloud run services describe souzoku-agent `
+  --project <PROJECT_ID> `
+  --region asia-northeast1 `
+  --format export
+```
+
 ## 4. Gemini実接続証拠
 
 `gemini_configured=true`は環境変数の有無であり、成功証拠として扱わない。Cloud Run本番で実行トレースを確認する。
@@ -85,12 +108,22 @@ deploy前に報告する項目:
 
 - 期待ルート`spouse`、`co_resident`、`house_lost`を各3言い換え、合計9件。
 - 入力文、期待ルート、実際のルート、Function名、fallback有無、latency、合否を記録。
+- `同居`、`別居`、`持ち家なし`などの正解ラベルを直接書かない自然な言い換えを使う。
+
+問い返し→再開評価:
+
+- 曖昧相談2件で`request_clarification`が選ばれる。
+- 問い返し前後で案件stateが完全一致し、ReviewとWordが解放されない。
+- 追加回答直後に`POST /api/run/continue`で再開できる。
+- 再開後は`select_taker_branch`が選ばれ、期待ルートと一致する。
+- 判断履歴が`request_clarification → select_taker_branch`の2段になり、両方ともfallbackなし。
 
 公開E2Eと合わせた機械実行:
 
 ```powershell
 python scripts\production_evidence.py `
   --base-url https://souzoku-agent-698253423667.asia-northeast1.run.app `
+  --expected-version <公開mainの40文字SHA> `
   --output C:\tmp\souzoku-shield-production-evidence.json `
   --word-output C:\tmp\souzoku-shield-production.docx
 ```
@@ -109,7 +142,8 @@ python scripts\production_evidence.py `
 - 承認前はWord出力不可、承認後のみWord出力可能。
 - Microsoft Wordで`.docx`を開け、破損警告・文字化けがない。
 - 初期化が別セッションへ影響しない。
-- 相談文8〜1200文字、2秒cooldown、1セッション20回上限、同時実行防止が有効。
+- 相談文8〜1200文字、追加回答2〜500文字、2秒cooldown、1セッション20回上限、同時実行防止が有効。
+- 追加回答による再開だけは直前の問い返しから連続操作でき、実行回数上限は維持される。
 
 Gemini APIのクォータ・予算通知はリポジトリ内の機能ではなくGoogle Cloud側の設定であるため、デプロイ前に対象projectのBudget alertsとAPI quotaを別途確認する。
 

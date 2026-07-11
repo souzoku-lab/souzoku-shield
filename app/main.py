@@ -26,6 +26,7 @@ from .engine.reducer import (
 )
 from .models import (
     CasePatch,
+    ClarificationAnswerRequest,
     ConsultationRunRequest,
     DocumentPatch,
     HeirCreateRequest,
@@ -57,6 +58,7 @@ class DemoSession:
 
     state: dict[str, Any] = field(default_factory=default_case_state)
     last_run: dict[str, Any] | None = None
+    pending_clarification: dict[str, Any] | None = None
     word_export_approved: bool = False
     touched_at: float = field(default_factory=time.time)
     run_count: int = 0
@@ -175,8 +177,10 @@ def health() -> dict[str, Any]:
 
 @app.post("/api/demo/seed")
 def seed_demo(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
+    _reject_if_run_in_progress(session)
     session.state = default_case_state()
     session.last_run = None
+    session.pending_clarification = None
     _reset_approval(session)
     return {"ok": True, "state": copy.deepcopy(session.state), "case": _case_payload(session)}
 
@@ -184,10 +188,12 @@ def seed_demo(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
 @app.post("/api/demo/clear-heirs")
 def clear_demo_heirs(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     """自然文から相続人カードを起票するデモ用の未登録状態に戻す。"""
+    _reject_if_run_in_progress(session)
     session.state["heirs"] = []
     session.state["home_acquirer_id"] = ""
     session.state["acquirer_type"] = load_rules()["expert"]["demo_case"]["default_acquirer_type"]
     session.last_run = None
+    session.pending_clarification = None
     _reset_approval(session)
     return {"ok": True, "case": _case_payload(session)}
 
@@ -199,6 +205,8 @@ def get_case(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
 
 @app.patch("/api/case")
 def patch_case(payload: CasePatch, session: DemoSession = Depends(get_session)) -> dict[str, Any]:
+    _reject_if_run_in_progress(session)
+    _reject_if_clarification_pending(session)
     if payload.acquirer_type is not None:
         session.state["acquirer_type"] = payload.acquirer_type
         selected_id = select_home_acquirer_id_for_type(session.state, payload.acquirer_type)
@@ -215,6 +223,8 @@ def patch_case(payload: CasePatch, session: DemoSession = Depends(get_session)) 
 @app.post("/api/intake")
 def create_intake(payload: IntakeRequest, session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     """案件1枚投入のM1導線。保存はdemo memoryのみ。"""
+    _reject_if_run_in_progress(session)
+    _reject_if_clarification_pending(session)
     session.state["case_title"] = payload.title
     session.state["acquirer_type"] = payload.acquirer_type
     selected_id = select_home_acquirer_id_for_type(session.state, payload.acquirer_type)
@@ -228,6 +238,7 @@ def create_intake(payload: IntakeRequest, session: DemoSession = Depends(get_ses
 @app.post("/api/run")
 def run_agent(payload: ConsultationRunRequest, session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     """相談文からACTIONタイムラインを起動する。応答文は返さず状態を更新する。"""
+    _reject_if_clarification_pending(session)
     _reserve_agent_run(session)
     try:
         rules = load_rules()
@@ -237,10 +248,36 @@ def run_agent(payload: ConsultationRunRequest, session: DemoSession = Depends(ge
             rules=rules,
             gemini_configured=bool(os.getenv("GEMINI_API_KEY")),
         )
-        session.state = next_state
-        session.state["manual_inputs"] = _default_manual_inputs()
-        session.last_run = run
-        _reset_approval(session)
+        _store_agent_result(session, next_state, run)
+        return {"ok": True, "run": copy.deepcopy(run), "case": _case_payload(session)}
+    finally:
+        _finish_agent_run(session)
+
+
+@app.post("/api/run/continue")
+def continue_agent(
+    payload: ClarificationAnswerRequest,
+    session: DemoSession = Depends(get_session),
+) -> dict[str, Any]:
+    """追加回答を元相談へ結合し、停止中のRouter判断を再開する。"""
+    pending = copy.deepcopy(session.pending_clarification)
+    if pending is None:
+        raise HTTPException(status_code=409, detail="clarification_not_pending")
+
+    _reserve_agent_run(session, bypass_cooldown=True)
+    try:
+        rules = load_rules()
+        combined_text = _continuation_text(pending, payload.answer)
+        next_state, run = build_agent_run(
+            consultation_text=combined_text,
+            state=copy.deepcopy(session.state),
+            rules=rules,
+            gemini_configured=bool(os.getenv("GEMINI_API_KEY")),
+            source="clarification_resume",
+            decision_history=copy.deepcopy(pending["decision_history"]),
+            continuation_of=str(pending["run_id"]),
+        )
+        _store_agent_result(session, next_state, run)
         return {"ok": True, "run": copy.deepcopy(run), "case": _case_payload(session)}
     finally:
         _finish_agent_run(session)
@@ -249,6 +286,8 @@ def run_agent(payload: ConsultationRunRequest, session: DemoSession = Depends(ge
 @app.post("/api/review/from-cards")
 def run_review_from_cards(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     """相談文なしで、登録済み相続人カードからReview到達状態を作る。"""
+    _reject_if_run_in_progress(session)
+    _reject_if_clarification_pending(session)
     _ensure_card_review_inputs(session)
     _reserve_agent_run(session)
     try:
@@ -258,10 +297,7 @@ def run_review_from_cards(session: DemoSession = Depends(get_session)) -> dict[s
             rules=rules,
             gemini_configured=bool(os.getenv("GEMINI_API_KEY")),
         )
-        session.state = next_state
-        session.state["manual_inputs"] = _default_manual_inputs()
-        session.last_run = run
-        _reset_approval(session)
+        _store_agent_result(session, next_state, run)
         return {"ok": True, "run": copy.deepcopy(run), "case": _case_payload(session)}
     finally:
         _finish_agent_run(session)
@@ -271,6 +307,8 @@ def run_review_from_cards(session: DemoSession = Depends(get_session)) -> dict[s
 def patch_document(
     document_id: str, payload: DocumentPatch, session: DemoSession = Depends(get_session)
 ) -> dict[str, Any]:
+    _reject_if_run_in_progress(session)
+    _reject_if_clarification_pending(session)
     if document_id not in session.state["documents"]:
         raise HTTPException(status_code=404, detail="document_not_found")
     session.state["documents"][document_id] = payload.status
@@ -280,6 +318,8 @@ def patch_document(
 
 @app.patch("/api/heirs/{heir_id}")
 def patch_heir(heir_id: str, payload: HeirPatch, session: DemoSession = Depends(get_session)) -> dict[str, Any]:
+    _reject_if_run_in_progress(session)
+    _reject_if_clarification_pending(session)
     heirs = _ensure_heirs(session.state)
     heir = next((item for item in heirs if item["id"] == heir_id), None)
     if heir is None:
@@ -302,6 +342,8 @@ def patch_heir(heir_id: str, payload: HeirPatch, session: DemoSession = Depends(
 
 @app.delete("/api/heirs/{heir_id}")
 def delete_heir(heir_id: str, session: DemoSession = Depends(get_session)) -> dict[str, Any]:
+    _reject_if_run_in_progress(session)
+    _reject_if_clarification_pending(session)
     heirs = _ensure_heirs(session.state)
     if not any(item["id"] == heir_id for item in heirs):
         raise HTTPException(status_code=404, detail="heir_not_found")
@@ -322,6 +364,8 @@ def delete_heir(heir_id: str, session: DemoSession = Depends(get_session)) -> di
 
 @app.post("/api/heirs")
 def create_heir(payload: HeirCreateRequest, session: DemoSession = Depends(get_session)) -> dict[str, Any]:
+    _reject_if_run_in_progress(session)
+    _reject_if_clarification_pending(session)
     heirs = _ensure_heirs(session.state)
     profile = HEIR_RELATIONSHIP_PROFILES[payload.relationship]
     new_heir = {
@@ -344,6 +388,8 @@ def patch_overall_opinion(
     payload: ManualOpinionPatch, session: DemoSession = Depends(get_session)
 ) -> dict[str, Any]:
     """税理士が画面上で手入力した総合所見を保存する。AIはこの欄を生成しない。"""
+    _reject_if_run_in_progress(session)
+    _reject_if_clarification_pending(session)
     manual_inputs = _ensure_manual_inputs(session.state)
     manual_inputs["overall_opinion"] = payload.overall_opinion
     _reset_approval(session)
@@ -369,6 +415,7 @@ def harness(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
 @app.post("/api/approve")
 def approve_word_export(session: DemoSession = Depends(get_session)) -> dict[str, Any]:
     """Review終端のHITL承認。承認後だけWord出力を許可する。"""
+    _reject_if_run_in_progress(session)
     if not _review_ready(session):
         raise HTTPException(status_code=409, detail="review_not_ready")
     session.word_export_approved = True
@@ -377,6 +424,7 @@ def approve_word_export(session: DemoSession = Depends(get_session)) -> dict[str
 
 @app.get("/api/export/word")
 def export_word(session: DemoSession = Depends(get_session)) -> StreamingResponse:
+    _reject_if_run_in_progress(session)
     if not (session.word_export_approved and _review_ready(session)):
         raise HTTPException(status_code=409, detail="approval_required")
     rules = load_rules()
@@ -407,6 +455,7 @@ def _case_payload(session: DemoSession) -> dict[str, Any]:
         "harness": evaluate_suite(rules, state),
         "bad_demo_fixture": evaluate_bad_demo_fixture(rules, state),
         "last_run": copy.deepcopy(session.last_run),
+        "pending_clarification": _pending_clarification_payload(session),
         "approval": _approval_payload(session),
     }
 
@@ -430,7 +479,7 @@ def _reset_approval(session: DemoSession) -> None:
     session.word_export_approved = False
 
 
-def _reserve_agent_run(session: DemoSession) -> None:
+def _reserve_agent_run(session: DemoSession, *, bypass_cooldown: bool = False) -> None:
     now = time.monotonic()
     with session.run_guard:
         if session.run_in_progress:
@@ -442,7 +491,7 @@ def _reserve_agent_run(session: DemoSession) -> None:
                 headers={"Retry-After": str(SESSION_TTL_SECONDS)},
             )
         elapsed = now - session.last_run_started_at
-        if session.last_run_started_at and elapsed < RUN_COOLDOWN_SECONDS:
+        if not bypass_cooldown and session.last_run_started_at and elapsed < RUN_COOLDOWN_SECONDS:
             retry_after = max(1, int(RUN_COOLDOWN_SECONDS - elapsed + 0.999))
             raise HTTPException(
                 status_code=429,
@@ -461,6 +510,7 @@ def _finish_agent_run(session: DemoSession) -> None:
 
 def _reset_review_state(session: DemoSession, *, clear_run: bool = False) -> None:
     _reset_approval(session)
+    session.pending_clarification = None
     if clear_run:
         session.last_run = None
 
@@ -530,8 +580,73 @@ def _review_ready(session: DemoSession) -> bool:
 def _approval_payload(session: DemoSession) -> dict[str, Any]:
     ready = _review_ready(session)
     approved = session.word_export_approved
+    awaiting = session.pending_clarification is not None
     return {
-        "status": "APPROVED" if approved else ("PENDING_APPROVAL" if ready else "NEEDS_REVIEW"),
+        "status": (
+            "AWAITING_CLARIFICATION"
+            if awaiting
+            else "APPROVED"
+            if approved
+            else "PENDING_APPROVAL"
+            if ready
+            else "NEEDS_REVIEW"
+        ),
         "review_ready": ready,
         "word_export_enabled": approved and ready,
     }
+
+
+def _store_agent_result(
+    session: DemoSession,
+    next_state: dict[str, Any],
+    run: dict[str, Any],
+) -> None:
+    """追加確認なら状態不変で停止し、それ以外は案件状態を確定する。"""
+    if run.get("status") == "AWAITING_CLARIFICATION":
+        session.pending_clarification = {
+            "original_text": str(run["input_text"]),
+            "run_id": str(run["id"]),
+            "missing_fact": str(run["clarification"]["missing_fact"]),
+            "question": str(run["clarification"]["question"]),
+            "decision_history": copy.deepcopy(run.get("decision_history", [])),
+        }
+    else:
+        session.state = next_state
+        session.state["manual_inputs"] = _default_manual_inputs()
+        session.pending_clarification = None
+    session.last_run = run
+    _reset_approval(session)
+
+
+def _pending_clarification_payload(session: DemoSession) -> dict[str, Any] | None:
+    pending = session.pending_clarification
+    if pending is None:
+        return None
+    return {
+        "run_id": str(pending["run_id"]),
+        "missing_fact": str(pending["missing_fact"]),
+        "question": str(pending["question"]),
+    }
+
+
+def _reject_if_clarification_pending(session: DemoSession) -> None:
+    if session.pending_clarification is not None:
+        raise HTTPException(status_code=409, detail="clarification_pending")
+
+
+def _reject_if_run_in_progress(session: DemoSession) -> None:
+    if session.run_in_progress:
+        raise HTTPException(status_code=409, detail="run_in_progress")
+
+
+def _continuation_text(pending: dict[str, Any], answer: str) -> str:
+    original = str(pending["original_text"])
+    missing_fact = str(pending.get("missing_fact") or "")
+    if missing_fact == "home_acquirer":
+        supplement = f"追加回答（自宅取得者）: {answer} 自宅を取得する予定なのはこの方です。"
+    else:
+        supplement = (
+            f"追加回答（自宅取得者本人の居住・持ち家状況）: 取得者本人は{answer} "
+            "この取得者本人が自宅を取得します。"
+        )
+    return f"{original} {supplement}"

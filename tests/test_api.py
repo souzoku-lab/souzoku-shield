@@ -75,6 +75,10 @@ def test_agent_run_limit_and_in_progress_guard(monkeypatch: pytest.MonkeyPatch) 
         main_module._reserve_agent_run(session)
     assert caught.value.status_code == 409
     assert caught.value.detail == "run_in_progress"
+    with pytest.raises(HTTPException) as mutation_caught:
+        main_module._reject_if_run_in_progress(session)
+    assert mutation_caught.value.status_code == 409
+    assert mutation_caught.value.detail == "run_in_progress"
 
 
 def test_case_patch_changes_counterfactual_branch() -> None:
@@ -175,6 +179,18 @@ def test_static_ui_is_served() -> None:
         assert "renderGeminiEvidence" in script.text
         assert "Gemini 実行トレース（Function Calling）" in script.text
         assert "Geminiが相談文を確認中" in script.text
+        assert 'id="clarificationPanel"' in index.text
+        assert 'id="clarificationAnswer"' in index.text
+        assert 'id="resumeButton"' in index.text
+        assert 'id="ambiguousDemoButton"' in index.text
+        assert "追加情報を渡して再開" in index.text
+        assert "renderDecisionHistory" in script.text
+        assert "renderPendingLock" in script.text
+        assert "renderExecutionLock" in script.text
+        assert 'api("/api/run/continue"' in script.text
+        assert "gridTemplateColumns" not in script.text
+        assert "--timeline-columns" in script.text
+        assert "--timeline-columns" in styles.text
         assert "誤実装サンプル" not in script.text
 
 
@@ -403,8 +419,11 @@ def test_consultation_run_uses_gemini_function_calling_when_key_is_set(monkeypat
     run = body["run"]
     assert calls
     assert calls[0]["model"] == "gemini-3.5-flash"
-    assert calls[0]["tools"][0]["type"] == "function"
-    assert calls[0]["tools"][0]["name"] == "select_taker_branch"
+    assert all(tool["type"] == "function" for tool in calls[0]["tools"])
+    assert {tool["name"] for tool in calls[0]["tools"]} == {
+        "select_taker_branch",
+        "request_clarification",
+    }
     assert calls[0]["timeout"] == 10  # 実APIハング時に審査デモを固めない
     assert run["mode"] == "gemini_function_calling"
     assert run["gemini"]["used"] is True
@@ -412,6 +431,270 @@ def test_consultation_run_uses_gemini_function_calling_when_key_is_set(monkeypat
     assert run["gemini"]["arguments"]["acquirer_type"] == "house_lost"
     assert isinstance(run["gemini"]["latency_ms"], int)
     assert body["case"]["analysis"]["acquirer"]["id"] == "house_lost"
+
+
+def test_gemini_can_request_clarification_without_mutating_case(monkeypatch) -> None:
+    calls = []
+
+    class FakeInteractions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                steps=[
+                    SimpleNamespace(
+                        type="function_call",
+                        id="call_clarify_1",
+                        name="request_clarification",
+                        arguments={
+                            "missing_fact": "residence_and_home_ownership",
+                            "reason": "取得予定者の居住・持ち家情報が不足",
+                        },
+                    )
+                ]
+            )
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(agent_run, "_create_gemini_client", lambda api_key: FakeClient())
+
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        before = client.get("/api/case").json()["state"]
+        response = client.post(
+            "/api/run",
+            json={"text": "父が亡くなり、次男が実家を引き継ぐ話になっています。"},
+        )
+        blocked_restart = client.post(
+            "/api/run",
+            json={"text": "別の相談でやり直します。母が自宅を取得します。"},
+        )
+        blocked_case_patch = client.patch("/api/case", json={"partition_status": "finalized"})
+        blocked_heir = client.post(
+            "/api/heirs",
+            json={"relationship": "eldest_son", "co_resident": True},
+        )
+        approval = client.post("/api/approve")
+        word = client.get("/api/export/word")
+        after_blocked_mutations = client.get("/api/case").json()["state"]
+
+    assert response.status_code == 200
+    body = response.json()
+    run = body["run"]
+    assert calls
+    assert {tool["name"] for tool in calls[0]["tools"]} == {
+        "select_taker_branch",
+        "request_clarification",
+    }
+    assert run["status"] == "AWAITING_CLARIFICATION"
+    assert run["approval_status"] == "NOT_READY"
+    assert run["state_mutated"] is False
+    assert run["gemini"]["tool_name"] == "request_clarification"
+    assert run["clarification"]["missing_fact"] == "residence_and_home_ownership"
+    assert [step["label"] for step in run["steps"]] == ["Intake", "Clarify"]
+    assert run["steps"][-1]["status"] == "AWAITING_INPUT"
+    assert body["case"]["state"] == before
+    assert body["case"]["approval"]["status"] == "AWAITING_CLARIFICATION"
+    assert body["case"]["approval"]["review_ready"] is False
+    assert body["case"]["pending_clarification"]["question"].startswith("取得予定者は")
+    assert blocked_restart.status_code == 409
+    assert blocked_case_patch.status_code == 409
+    assert blocked_heir.status_code == 409
+    assert after_blocked_mutations == before
+    assert approval.status_code == 409
+    assert word.status_code == 409
+
+
+def test_gemini_semantic_route_populates_generated_card_without_keyword_override(monkeypatch) -> None:
+    class FakeInteractions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                steps=[
+                    SimpleNamespace(
+                        type="function_call",
+                        id="call_semantic_co_resident",
+                        name="select_taker_branch",
+                        arguments={
+                            "acquirer_type": "co_resident",
+                            "reason": "亡くなるまで同じ屋根の下で生活していた",
+                        },
+                    )
+                ]
+            )
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(agent_run, "_create_gemini_client", lambda api_key: FakeClient())
+
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        response = client.post(
+            "/api/run",
+            json={"text": "亡くなるまで父と同じ屋根の下で生活した長女が、実家を引き継ぎます。"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["case"]["analysis"]["acquirer"]["id"] == "co_resident"
+    assert body["case"]["state"]["heirs"][0]["co_resident"] is True
+    assert body["run"]["gemini"]["proposed_route"] == "co_resident"
+    assert body["run"]["gemini"]["effective_route"] == "co_resident"
+    assert body["run"]["gemini"]["guardrail_applied"] is False
+
+
+def test_clarification_resume_runs_selected_branch_and_keeps_history(monkeypatch) -> None:
+    calls = []
+
+    class FakeInteractions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return SimpleNamespace(
+                    steps=[
+                        SimpleNamespace(
+                            type="function_call",
+                            id="call_clarify_1",
+                            name="request_clarification",
+                            arguments={
+                                "missing_fact": "residence_and_home_ownership",
+                                "reason": "取得予定者の居住情報が不足",
+                            },
+                        )
+                    ]
+                )
+            return SimpleNamespace(
+                steps=[
+                    SimpleNamespace(
+                        type="function_call",
+                        id="call_router_2",
+                        name="select_taker_branch",
+                        arguments={
+                            "acquirer_type": "house_lost",
+                            "reason": "追加回答から別居・賃貸・持ち家なしを確認",
+                        },
+                    )
+                ]
+            )
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(agent_run, "_create_gemini_client", lambda api_key: FakeClient())
+
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        first = client.post(
+            "/api/run",
+            json={"text": "父が亡くなり、次男が実家を引き継ぐ話になっています。"},
+        )
+        resumed = client.post(
+            "/api/run/continue",
+            json={"answer": "次男は父とは別に賃貸住宅で暮らし、持ち家はありません。"},
+        )
+
+    assert first.status_code == 200
+    assert resumed.status_code == 200
+    body = resumed.json()
+    run = body["run"]
+    assert len(calls) == 2
+    assert "追加回答" in calls[1]["input"]
+    assert run["source"] == "clarification_resume"
+    assert run["continuation_of"] == first.json()["run"]["id"]
+    assert run["status"] == "REVIEW_PENDING"
+    assert run["state_mutated"] is True
+    assert [event["tool"] for event in run["decision_history"]] == [
+        "request_clarification",
+        "select_taker_branch",
+    ]
+    assert run["decision_history"][0]["state_mutated"] is False
+    assert run["decision_history"][1]["state_mutated"] is True
+    assert body["case"]["pending_clarification"] is None
+    assert body["case"]["analysis"]["acquirer"]["id"] == "house_lost"
+    assert body["case"]["approval"]["review_ready"] is True
+
+
+def test_continue_without_pending_clarification_is_rejected() -> None:
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        response = client.post("/api/run/continue", json={"answer": "次男は別居です。"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "clarification_not_pending"
+
+
+def test_reset_clears_pending_clarification(monkeypatch) -> None:
+    class FakeInteractions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                steps=[
+                    SimpleNamespace(
+                        type="function_call",
+                        id="call_clarify_reset",
+                        name="request_clarification",
+                        arguments={"missing_fact": "home_acquirer", "reason": "取得者が不明"},
+                    )
+                ]
+            )
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(agent_run, "_create_gemini_client", lambda api_key: FakeClient())
+
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        asked = client.post(
+            "/api/run",
+            json={"text": "父が亡くなりました。自宅の相続について確認を進めてください。"},
+        )
+        reset = client.post("/api/demo/seed")
+        resumed = client.post("/api/run/continue", json={"answer": "母が取得します。"})
+
+    assert asked.json()["case"]["pending_clarification"] is not None
+    assert reset.json()["case"]["pending_clarification"] is None
+    assert resumed.status_code == 409
+
+
+def test_pending_clarification_is_session_isolated(monkeypatch) -> None:
+    class FakeInteractions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                steps=[
+                    SimpleNamespace(
+                        type="function_call",
+                        id="call_clarify_isolated",
+                        name="request_clarification",
+                        arguments={"missing_fact": "home_acquirer", "reason": "取得者が不明"},
+                    )
+                ]
+            )
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(agent_run, "_create_gemini_client", lambda api_key: FakeClient())
+
+    with TestClient(app) as judge_a, TestClient(app) as judge_b:
+        judge_a.post("/api/demo/seed")
+        judge_b.post("/api/demo/seed")
+        judge_a.post(
+            "/api/run",
+            json={"text": "父が亡くなりました。自宅の相続について確認を進めてください。"},
+        )
+        state_b = judge_b.get("/api/case")
+        resume_b = judge_b.post("/api/run/continue", json={"answer": "母が取得します。"})
+
+    assert state_b.json()["pending_clarification"] is None
+    assert resume_b.status_code == 409
 
 
 def test_card_review_uses_gemini_function_calling_when_key_is_set(monkeypatch) -> None:
@@ -455,9 +738,54 @@ def test_card_review_uses_gemini_function_calling_when_key_is_set(monkeypatch) -
     assert run["source"] == "heir_cards"
     assert run["mode"] == "gemini_function_calling"
     assert run["gemini"]["used"] is True
+    assert run["gemini"]["proposed_route"] == "co_resident"
+    assert run["gemini"]["effective_route"] == "house_lost"
+    assert run["gemini"]["guardrail_applied"] is True
+    assert "構造化事実を優先" in run["gemini"]["guardrail_reason"]
     assert body["case"]["analysis"]["home_acquirer"]["name"] == "次男"
     assert body["case"]["analysis"]["acquirer"]["id"] == "house_lost"
     assert body["case"]["analysis"]["eligibility_alerts"][0]["impact_yen"] == 56000000
+
+
+def test_structured_card_prevents_unnecessary_gemini_clarification(monkeypatch) -> None:
+    class FakeInteractions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                steps=[
+                    SimpleNamespace(
+                        type="function_call",
+                        id="call_unnecessary_clarification",
+                        name="request_clarification",
+                        arguments={
+                            "missing_fact": "residence_and_home_ownership",
+                            "reason": "居住情報を確認したい",
+                        },
+                    )
+                ]
+            )
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(agent_run, "_create_gemini_client", lambda api_key: FakeClient())
+
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.patch("/api/case", json={"home_acquirer_id": "second_son"})
+        response = client.post("/api/review/from-cards")
+
+    assert response.status_code == 200
+    body = response.json()
+    run = body["run"]
+    assert run["status"] == "REVIEW_PENDING"
+    assert run["mode"] == "deterministic_replay"
+    assert run["gemini"]["used"] is False
+    assert run["gemini"]["tool_name"] == "request_clarification"
+    assert run["gemini"]["fallback_reason"] == "clarification_not_needed_structured_facts"
+    assert run["gemini"]["guardrail_applied"] is True
+    assert body["case"]["analysis"]["acquirer"]["id"] == "house_lost"
+    assert body["case"]["approval"]["review_ready"] is True
 
 
 def test_consultation_run_falls_back_without_gemini_key(monkeypatch) -> None:
@@ -479,6 +807,143 @@ def test_consultation_run_falls_back_without_gemini_key(monkeypatch) -> None:
     assert run["gemini"]["used"] is False
     assert run["gemini"]["fallback_reason"] == "gemini_api_key_not_set"
     assert response.json()["case"]["analysis"]["acquirer"]["id"] == "co_resident"
+
+
+def test_ambiguous_consultation_without_gemini_stops_safely() -> None:
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        before = client.get("/api/case").json()["state"]
+        response = client.post(
+            "/api/run",
+            json={"text": "父が亡くなり、次男が実家を引き継ぐ話になっています。"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run"]["mode"] == "deterministic_safe_stop"
+    assert body["run"]["status"] == "AWAITING_CLARIFICATION"
+    assert body["run"]["state_mutated"] is False
+    assert body["run"]["decision_history"][0]["tool"] == "deterministic_safe_stop"
+    assert body["run"]["gemini"]["fallback_reason"] == "gemini_api_key_not_set"
+    assert body["case"]["state"] == before
+    assert body["case"]["approval"]["review_ready"] is False
+
+
+def test_ambiguous_consultation_gemini_failure_stops_instead_of_guessing(monkeypatch) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+    def fail_client(api_key: str):
+        raise TimeoutError("simulated timeout")
+
+    monkeypatch.setattr(agent_run, "_create_gemini_client", fail_client)
+
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        before = client.get("/api/case").json()["state"]
+        response = client.post(
+            "/api/run",
+            json={"text": "父が亡くなり、次男が実家を引き継ぐ話になっています。"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run"]["mode"] == "deterministic_safe_stop"
+    assert body["run"]["gemini"]["used"] is False
+    assert body["run"]["gemini"]["fallback_reason"] == "TimeoutError"
+    assert body["run"]["clarification"]["missing_fact"] == "residence_and_home_ownership"
+    assert body["case"]["state"] == before
+
+
+def test_deterministic_safe_stop_can_resume_after_home_acquirer_answer() -> None:
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        first = client.post(
+            "/api/run",
+            json={"text": "父が亡くなりました。自宅の相続について確認を進めてください。"},
+        )
+        resumed = client.post("/api/run/continue", json={"answer": "母です。"})
+
+    assert first.status_code == 200
+    assert first.json()["run"]["clarification"]["missing_fact"] == "home_acquirer"
+    assert resumed.status_code == 200
+    body = resumed.json()
+    assert body["run"]["status"] == "REVIEW_PENDING"
+    assert [event["tool"] for event in body["run"]["decision_history"]] == [
+        "deterministic_safe_stop",
+        "deterministic_replay",
+    ]
+    assert body["case"]["analysis"]["acquirer"]["id"] == "spouse"
+    assert body["case"]["approval"]["review_ready"] is True
+
+
+def test_deterministic_guard_stops_for_undecided_acquirer_or_conflicting_residence() -> None:
+    cases = [
+        (
+            "次男は別居していますが、自宅を誰が相続するかはまだ決まっていません。",
+            "home_acquirer",
+        ),
+        (
+            "父と同居していた次男が自宅を相続しますが、現在は別居で賃貸です。",
+            "residence_and_home_ownership",
+        ),
+    ]
+    with TestClient(app) as client:
+        for text, missing_fact in cases:
+            client.post("/api/demo/seed")
+            client.post("/api/demo/clear-heirs")
+            response = client.post("/api/run", json={"text": text})
+            assert response.status_code == 200, text
+            body = response.json()
+            assert body["run"]["status"] == "AWAITING_CLARIFICATION", text
+            assert body["run"]["mode"] == "deterministic_safe_stop", text
+            assert body["run"]["clarification"]["missing_fact"] == missing_fact, text
+            assert body["run"]["state_mutated"] is False, text
+            assert body["case"]["approval"]["review_ready"] is False, text
+
+
+def test_natural_text_gemini_clarification_is_not_suppressed_by_keyword_match(monkeypatch) -> None:
+    class FakeInteractions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                steps=[
+                    SimpleNamespace(
+                        type="function_call",
+                        id="call_home_acquirer_clarification",
+                        name="request_clarification",
+                        arguments={
+                            "missing_fact": "residence_and_home_ownership",
+                            "reason": "居住状況を確認したい",
+                        },
+                    )
+                ]
+            )
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(agent_run, "_create_gemini_client", lambda api_key: FakeClient())
+
+    with TestClient(app) as client:
+        client.post("/api/demo/seed")
+        client.post("/api/demo/clear-heirs")
+        response = client.post(
+            "/api/run",
+            json={"text": "次男は別居していますが、自宅を誰が相続するかはまだ決まっていません。"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run"]["status"] == "AWAITING_CLARIFICATION"
+    assert body["run"]["gemini"]["used"] is True
+    assert body["run"]["gemini"]["tool_name"] == "request_clarification"
+    assert body["run"]["gemini"]["guardrail_applied"] is True
+    assert "不足事実を質問へ優先" in body["run"]["gemini"]["guardrail_reason"]
+    assert body["run"]["clarification"]["missing_fact"] == "home_acquirer"
+    assert body["case"]["approval"]["review_ready"] is False
 
 
 def test_consultation_run_reselects_existing_home_acquirer_from_text() -> None:

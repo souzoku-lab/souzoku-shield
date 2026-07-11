@@ -9,6 +9,7 @@ const statusOrder = ["not_requested", "requested", "received", "verified"];
 
 let currentPayload = null;
 let editingHeirId = null;
+let renderedClarificationRunId = "";
 
 const HEIR_RELATIONSHIP_BY_NAME = {
   "配偶者": "spouse",
@@ -43,22 +44,27 @@ async function refresh() {
 }
 
 function render(payload) {
+  restoreInteractionLocks();
   const { analysis, rules_summary, counterfactuals, harness, last_run, approval } = payload;
   renderCase(analysis);
   renderControls(payload.state, rules_summary, analysis);
-  renderApproval(approval, payload.state);
+  renderApproval(approval, payload.state, last_run);
   renderRun(last_run, approval);
   renderGeminiEvidence(last_run);
+  renderClarification(last_run);
   renderMetrics(analysis, harness);
   renderKanban(analysis, rules_summary);
   renderDraft(analysis, payload.manual_inputs || {});
   renderBranches(counterfactuals);
   renderHarness(harness);
+  renderPendingLock(last_run);
+  renderExecutionLock(isRunning);
 }
 
-function renderApproval(approval, state) {
+function renderApproval(approval, state, lastRun) {
   const enabled = Boolean(approval && approval.word_export_enabled);
   const ready = Boolean(approval && approval.review_ready);
+  const awaiting = Boolean(lastRun && lastRun.status === "AWAITING_CLARIFICATION");
   const cardReady = Boolean(state && Array.isArray(state.heirs) && state.heirs.length > 0 && state.home_acquirer_id);
   const approveButton = qs("#approveButton");
   const inlineApproveButton = qs("#inlineApproveButton");
@@ -69,12 +75,19 @@ function renderApproval(approval, state) {
   const wordHint = qs("#wordHint");
   const flowStatus = qs("#wordFlowStatus");
   const flowHint = qs("#wordFlowHint");
-  const approvalText = enabled ? "レビュー完了済" : ready ? "レビュー完了（承認）" : "Review作成待ち";
+  qs("#runButton").disabled = awaiting;
+  const approvalText = awaiting
+    ? "追加情報待ち"
+    : enabled
+      ? "レビュー完了済"
+      : ready
+        ? "レビュー完了（承認）"
+        : "Review作成待ち";
   approveButton.textContent = approvalText;
   inlineApproveButton.textContent = enabled ? "② レビュー完了済" : ready ? "② レビュー完了（承認）" : "② レビュー完了（承認）";
   approveButton.disabled = enabled || !ready;
   inlineApproveButton.disabled = enabled || !ready;
-  cardReviewButton.disabled = ready || enabled || !cardReady;
+  cardReviewButton.disabled = awaiting || ready || enabled || !cardReady;
   cardReviewButton.textContent = ready || enabled
     ? "Review作成済み"
     : cardReady
@@ -84,7 +97,9 @@ function renderApproval(approval, state) {
     link.classList.toggle("disabled", !enabled);
     link.setAttribute("aria-disabled", enabled ? "false" : "true");
   });
-  approvalHint.textContent = enabled
+  approvalHint.textContent = awaiting
+    ? "追加回答後にReview作成へ進みます"
+    : enabled
     ? "レビュー完了済みです"
     : ready
       ? "内容確認後、レビュー完了（承認）してください"
@@ -92,14 +107,18 @@ function renderApproval(approval, state) {
         ? "カード内容でReview作成、または相談文を実行してください"
         : "相続人カードを登録するとReview作成できます";
   wordHint.textContent = enabled ? "クリックしてWordを出力できます" : "レビュー完了するとWord出力できます";
-  flowStatus.textContent = enabled
+  flowStatus.textContent = awaiting
+    ? "追加情報待ちで安全停止"
+    : enabled
     ? "③ Word出力できます"
     : ready
       ? "② レビュー完了（承認）"
       : cardReady
         ? "① Review作成できます"
         : "① 相続人カードを登録";
-  flowHint.textContent = enabled
+  flowHint.textContent = awaiting
+    ? "Geminiの質問に回答すると、同じ相談を引き継いでRouter判断を再開します。"
+    : enabled
     ? "右のWord出力ボタンを押すと、書面添付資料のdocxがダウンロードされます。"
     : ready
       ? "アラート、不足資料、総合所見を確認したら「② レビュー完了（承認）」を押します。"
@@ -113,6 +132,7 @@ function renderRun(run, approval) {
   const mode = qs("#runMode");
   timeline.innerHTML = "";
   if (!run) {
+    timeline.style.setProperty("--timeline-columns", 1);
     mode.textContent = "決定的リプレイ";
     const empty = document.createElement("div");
     empty.className = "timeline-step";
@@ -120,6 +140,7 @@ function renderRun(run, approval) {
     timeline.appendChild(empty);
     return;
   }
+  timeline.style.setProperty("--timeline-columns", Math.min(run.steps.length, 5));
   mode.textContent = runModeLabel(run);
   const approved = Boolean(approval && approval.word_export_enabled);
   run.steps.forEach((step) => timeline.appendChild(timelineStep(step, approved)));
@@ -151,13 +172,17 @@ function renderGeminiEvidence(run) {
   head.append(label, badge);
   box.appendChild(head);
 
-  const acquirer = g.arguments && g.arguments.acquirer_type ? g.arguments.acquirer_type : "—";
+  const result = g.arguments && g.arguments.acquirer_type
+    ? g.arguments.acquirer_type
+    : g.arguments && g.arguments.missing_fact
+      ? g.arguments.missing_fact
+      : "—";
   const rows = document.createElement("dl");
   rows.className = "gemini-evidence-rows";
   const entries = [
     ["model", g.model || "—"],
     ["tool", used ? g.tool_name || "—" : "—"],
-    ["result", used ? acquirer : "—"],
+    ["result", used ? result : "—"],
     ["latency", `${Number(g.latency_ms || 0)}ms`],
     ["fallback", used ? "なし" : fallbackLabel(g.fallback_reason) || "—"],
   ];
@@ -170,12 +195,137 @@ function renderGeminiEvidence(run) {
   });
   box.appendChild(rows);
 
+  if (g.guardrail_applied) {
+    const guardrail = document.createElement("p");
+    guardrail.className = "gemini-guardrail";
+    const proposal = g.proposed_route || g.tool_name || "—";
+    guardrail.textContent = `Gemini提案 ${proposal} → 決定的ガード後 ${g.effective_route || "継続"}：${g.guardrail_reason}`;
+    box.appendChild(guardrail);
+  }
+
   if (used && g.arguments && g.arguments.reason) {
     const reason = document.createElement("p");
     reason.className = "gemini-reason";
     reason.textContent = `理由: ${g.arguments.reason}`;
     box.appendChild(reason);
   }
+
+  renderDecisionHistory(box, run.decision_history || []);
+}
+
+function renderDecisionHistory(container, history) {
+  if (!Array.isArray(history) || history.length === 0) return;
+  const section = document.createElement("div");
+  section.className = "decision-history";
+  const title = document.createElement("strong");
+  title.textContent = history.length > 1 ? "判断履歴（停止 → 再開）" : "判断履歴";
+  const list = document.createElement("ol");
+  history.forEach((event) => {
+    const item = document.createElement("li");
+    const mutation = event.state_mutated ? "状態更新" : "状態変更なしで停止";
+    item.textContent = `${event.tool} → ${event.result} / ${mutation}`;
+    list.appendChild(item);
+  });
+  section.append(title, list);
+  container.appendChild(section);
+}
+
+function renderClarification(run) {
+  const panel = qs("#clarificationPanel");
+  const awaiting = Boolean(run && run.status === "AWAITING_CLARIFICATION" && run.clarification);
+  panel.hidden = !awaiting;
+  if (!awaiting) {
+    renderedClarificationRunId = "";
+    qs("#clarificationAnswer").value = "";
+    setClarificationError("");
+    return;
+  }
+  if (renderedClarificationRunId !== run.id) {
+    qs("#clarificationAnswer").value = "";
+    renderedClarificationRunId = run.id;
+  }
+  qs("#clarificationQuestion").textContent = run.clarification.question;
+}
+
+function renderPendingLock(run) {
+  const locked = Boolean(run && run.status === "AWAITING_CLARIFICATION");
+  const selectors = [
+    "#consultationText",
+    "#partitionSelect",
+    "#heirRegistrationForm select",
+    "#heirRegistrationForm button",
+    "#heirBoard input",
+    "#heirBoard button",
+    "#kanbanGrid select",
+    "#overallOpinionInput",
+    "#saveOverallOpinionButton",
+    "#clearOverallOpinionButton",
+  ];
+  document.querySelectorAll(selectors.join(", ")).forEach((control) => {
+    if (!locked) return;
+    rememberInteractionBase(control);
+    control.disabled = true;
+    control.setAttribute("aria-disabled", "true");
+  });
+}
+
+function renderExecutionLock(locked) {
+  const selectors = [
+    "#seedButton",
+    "#ambiguousDemoButton",
+    "#consultationText",
+    "#clarificationAnswer",
+    "#partitionSelect",
+    "#heirRegistrationForm select",
+    "#heirRegistrationForm button",
+    "#heirBoard input",
+    "#heirBoard button",
+    "#kanbanGrid select",
+    "#overallOpinionInput",
+    "#saveOverallOpinionButton",
+    "#clearOverallOpinionButton",
+    "#approveButton",
+    "#inlineApproveButton",
+  ];
+  document.querySelectorAll(selectors.join(", ")).forEach((control) => {
+    if (!locked) return;
+    rememberInteractionBase(control);
+    control.disabled = true;
+    control.setAttribute("aria-disabled", "true");
+  });
+  [qs("#wordLink"), qs("#inlineWordLink")].forEach((link) => {
+    if (!locked) return;
+    rememberLinkBase(link);
+    link.classList.add("disabled");
+    link.setAttribute("aria-disabled", "true");
+  });
+}
+
+function rememberInteractionBase(control) {
+  if (!Object.prototype.hasOwnProperty.call(control.dataset, "lockBaseDisabled")) {
+    control.dataset.lockBaseDisabled = control.disabled ? "true" : "false";
+  }
+}
+
+function rememberLinkBase(link) {
+  if (!Object.prototype.hasOwnProperty.call(link.dataset, "lockBaseLinkDisabled")) {
+    link.dataset.lockBaseLinkDisabled = link.classList.contains("disabled") ? "true" : "false";
+    link.dataset.lockBaseAriaDisabled = link.getAttribute("aria-disabled") || "false";
+  }
+}
+
+function restoreInteractionLocks() {
+  document.querySelectorAll("[data-lock-base-disabled]").forEach((control) => {
+    control.disabled = control.dataset.lockBaseDisabled === "true";
+    control.setAttribute("aria-disabled", control.disabled ? "true" : "false");
+    delete control.dataset.lockBaseDisabled;
+  });
+  document.querySelectorAll("[data-lock-base-link-disabled]").forEach((link) => {
+    link.classList.toggle("disabled", link.dataset.lockBaseLinkDisabled === "true");
+    link.setAttribute("aria-disabled", link.dataset.lockBaseAriaDisabled || "false");
+    delete link.dataset.lockBaseLinkDisabled;
+    delete link.dataset.lockBaseAriaDisabled;
+  });
 }
 
 function fallbackLabel(reason) {
@@ -183,6 +333,7 @@ function fallbackLabel(reason) {
     gemini_api_key_not_set: "APIキー未設定（決定的リプレイ）",
     gemini_no_function_call: "function call無し→決定的コアで継続",
     gemini_invalid_tool_call: "無効なtool呼び出し→決定的コアで継続",
+    clarification_not_needed_structured_facts: "構造化事実を優先→決定的コアで継続",
   };
   return map[reason] || (reason ? `${reason}→決定的コアで継続` : "");
 }
@@ -190,6 +341,9 @@ function fallbackLabel(reason) {
 function runModeLabel(run) {
   if (run.mode === "gemini_function_calling") {
     return "Gemini 3.5 Flash 実接続";
+  }
+  if (run.mode === "deterministic_safe_stop") {
+    return "決定的ガードで安全停止";
   }
   if (run.gemini_configured) {
     return "Gemini fallback（決定的）";
@@ -201,14 +355,21 @@ function timelineStep(step, approved) {
   const isReview = step.id === "review";
   const reviewDone = isReview && Boolean(approved);
   const pending = step.status === "PENDING_APPROVAL" && !reviewDone;
+  const awaiting = step.status === "AWAITING_INPUT";
 
   const item = document.createElement("article");
-  item.className = `timeline-step ${pending ? "pending" : ""} ${reviewDone ? "approved" : ""}`.trim();
+  item.className = `timeline-step ${pending ? "pending" : ""} ${awaiting ? "awaiting" : ""} ${reviewDone ? "approved" : ""}`.trim();
   const title = document.createElement("strong");
   title.textContent = step.label;
   const badge = document.createElement("span");
-  badge.className = `badge ${pending ? "red" : "green"}`;
-  badge.textContent = pending ? "レビュー完了待ち" : reviewDone ? "レビュー完了" : "DONE";
+  badge.className = `badge ${pending ? "red" : awaiting ? "amber" : "green"}`;
+  badge.textContent = pending
+    ? "レビュー完了待ち"
+    : awaiting
+      ? "追加情報待ち"
+      : reviewDone
+        ? "レビュー完了"
+        : "DONE";
   title.appendChild(badge);
 
   const summary = document.createElement("p");
@@ -319,7 +480,9 @@ function renderControls(state, summary, analysis) {
     choose.dataset.action = "choose-home-acquirer";
     choose.textContent = selected ? "自宅取得者" : "自宅を取得";
     choose.disabled = selected;
-    choose.addEventListener("click", () => patchCase({ home_acquirer_id: heir.id }));
+    choose.addEventListener("click", () => {
+      patchCase({ home_acquirer_id: heir.id }).catch((error) => setRunError(error.message));
+    });
 
     const toggle = document.createElement("button");
     toggle.type = "button";
@@ -327,7 +490,9 @@ function renderControls(state, summary, analysis) {
     toggle.textContent = heir.co_resident ? "同居" : "別居";
     toggle.className = "co-toggle";
     toggle.disabled = heir.relation === "spouse";
-    toggle.addEventListener("click", () => patchHeir(heir.id, { co_resident: !heir.co_resident }));
+    toggle.addEventListener("click", () => {
+      patchHeir(heir.id, { co_resident: !heir.co_resident }).catch((error) => setRunError(error.message));
+    });
 
     const actions = document.createElement("div");
     actions.className = "heir-card-actions";
@@ -448,7 +613,9 @@ function documentCard(doc, required, statuses) {
     option.selected = status === doc.status;
     select.appendChild(option);
   });
-  select.addEventListener("change", () => patchDocument(doc.id, select.value));
+  select.addEventListener("change", () => {
+    patchDocument(doc.id, select.value).catch((error) => setRunError(error.message));
+  });
   card.innerHTML = `<strong>${doc.label}</strong><p>${doc.reason}</p>`;
   card.appendChild(select);
   return card;
@@ -573,16 +740,23 @@ function setRunning(running) {
   isRunning = running;
   const status = qs("#runStatus");
   const state = currentPayload && currentPayload.state;
+  const awaiting = Boolean(currentPayload && currentPayload.last_run && currentPayload.last_run.status === "AWAITING_CLARIFICATION");
   const cardReady = Boolean(state && Array.isArray(state.heirs) && state.heirs.length > 0 && state.home_acquirer_id);
-  qs("#runButton").disabled = running;
-  qs("#cardReviewButton").disabled = running || !cardReady;
+  qs("#runButton").disabled = running || awaiting;
+  qs("#cardReviewButton").disabled = running || awaiting || !cardReady;
+  qs("#resumeButton").disabled = running || !awaiting;
   if (running) {
     status.hidden = false;
     status.textContent = "Geminiが相談文を確認中…（エージェント実行中）";
   } else {
     status.hidden = true;
     status.textContent = "";
-    qs("#runButton").disabled = false;
+    qs("#runButton").disabled = awaiting;
+  }
+  if (running) {
+    renderExecutionLock(true);
+  } else if (currentPayload) {
+    render(currentPayload);
   }
 }
 
@@ -603,6 +777,37 @@ async function runConsultation() {
   } finally {
     setRunning(false);
   }
+}
+
+async function resumeConsultation() {
+  if (isRunning) return;
+  const answer = qs("#clarificationAnswer").value.trim();
+  if (answer.length < 2) {
+    setClarificationError("追加回答は2文字以上で入力してください。");
+    return;
+  }
+  setClarificationError("");
+  setRunning(true);
+  try {
+    const result = await api("/api/run/continue", {
+      method: "POST",
+      body: JSON.stringify({ answer }),
+    });
+    currentPayload = result.case;
+    render(currentPayload);
+  } finally {
+    setRunning(false);
+  }
+}
+
+async function loadAmbiguousDemo() {
+  if (isRunning) return;
+  await api("/api/demo/seed", { method: "POST" });
+  const result = await api("/api/demo/clear-heirs", { method: "POST" });
+  currentPayload = result.case;
+  qs("#consultationText").value = "父が亡くなり、次男が実家を引き継ぐ話になっています。必要な確認を進めてください。";
+  render(currentPayload);
+  qs("#consultationText").focus();
 }
 
 async function runCardReview() {
@@ -652,6 +857,12 @@ function apiErrorMessage(status, body) {
   if (detail === "run_limit_exceeded") {
     return "このセッションの実行上限に達しました。新しいセッションでお試しください。";
   }
+  if (detail === "clarification_not_pending") {
+    return "追加情報待ちの相談がありません。もう一度相談文を実行してください。";
+  }
+  if (detail === "clarification_pending") {
+    return "追加情報待ちです。質問へ回答して再開するか、デモを初期化してください。";
+  }
   if (typeof detail === "string" && detail) {
     return detail;
   }
@@ -674,6 +885,17 @@ function setRunError(message) {
 
 function setHeirError(message) {
   const error = qs("#heirError");
+  if (!message) {
+    error.textContent = "";
+    error.hidden = true;
+    return;
+  }
+  error.textContent = message;
+  error.hidden = false;
+}
+
+function setClarificationError(message) {
+  const error = qs("#clarificationError");
   if (!message) {
     error.textContent = "";
     error.hidden = true;
@@ -730,7 +952,9 @@ function qs(selector) {
 }
 
 qs("#partitionSelect").addEventListener("change", (event) => {
-  patchCase({ partition_status: event.target.value });
+  patchCase({ partition_status: event.target.value }).catch((error) => {
+    setRunError(error.message);
+  });
 });
 
 qs("#seedButton").addEventListener("click", async () => {
@@ -759,6 +983,18 @@ qs("#runButton").addEventListener("click", () => {
   });
 });
 
+qs("#resumeButton").addEventListener("click", () => {
+  resumeConsultation().catch((error) => {
+    setClarificationError(error.message);
+  });
+});
+
+qs("#ambiguousDemoButton").addEventListener("click", () => {
+  loadAmbiguousDemo().catch((error) => {
+    setRunError(error.message);
+  });
+});
+
 qs("#approveButton").addEventListener("click", () => {
   approveWord().catch((error) => {
     setRunError(error.message);
@@ -768,6 +1004,14 @@ qs("#approveButton").addEventListener("click", () => {
 qs("#inlineApproveButton").addEventListener("click", () => {
   approveWord().catch((error) => {
     setRunError(error.message);
+  });
+});
+
+[qs("#wordLink"), qs("#inlineWordLink")].forEach((link) => {
+  link.addEventListener("click", (event) => {
+    if (link.getAttribute("aria-disabled") === "true" || isRunning) {
+      event.preventDefault();
+    }
   });
 });
 
